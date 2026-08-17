@@ -1,0 +1,118 @@
+name: Build Linux kernel
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-kernel.yml
+      - env.sh
+      - base.mak
+      - cfg.mak
+      - configs/hi3798mv310/**
+      - source/kernel/**
+      - source/common/drv/**
+      - source/msp/drv/**
+      - source/component/wifi/**
+      - source/component/bluetooth/**
+      - tools/linux/toolchains/arm-histbv320-linux/**
+      - tools/linux/utils/**
+  pull_request:
+    paths:
+      - .github/workflows/build-kernel.yml
+      - env.sh
+      - base.mak
+      - cfg.mak
+      - configs/hi3798mv310/**
+      - source/kernel/**
+      - source/common/drv/**
+      - source/msp/drv/**
+      - source/component/wifi/**
+      - source/component/bluetooth/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-kernel-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-kernel:
+    name: hi3798mv310 / arm-histbv320
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout SDK
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libncurses-dev
+
+      - name: Build Linux kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SHELL=/bin/bash
+
+          # Keep CI deterministic: always select the MV310 32-bit ARM profile
+          # used by the HG680-KA bring-up instead of relying on a previously
+          # generated cfg.mak in the working tree.
+          cp configs/hi3798mv310/hi3798mv31dmg_hi3798mv310_cfg.mak cfg.mak
+
+          source ./env.sh
+
+          echo "Toolchain:"
+          arm-histbv320-linux-gcc --version | head -n 1
+          echo "Parallel jobs: $(nproc)"
+
+          make linux -j"$(nproc)"
+
+      - name: Collect kernel artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+
+          KERNEL_BIN="$(find out -type f -path '*/image/emmc_image/hi_kernel.bin' -print -quit)"
+          UIMAGE="$(find out -type f -path '*/obj/source/kernel/linux-4.4.y/arch/arm/boot/uImage' -print -quit)"
+          KCONFIG="$(find out -type f -path '*/obj/source/kernel/linux-4.4.y/.config' -print -quit)"
+
+          test -n "$KERNEL_BIN"
+          test -n "$UIMAGE"
+          test -n "$KCONFIG"
+
+          cp "$KERNEL_BIN" artifacts/hi_kernel.bin
+          cp "$UIMAGE" artifacts/uImage
+          cp "$KCONFIG" artifacts/kernel.config
+
+          sha256sum \
+            artifacts/hi_kernel.bin \
+            artifacts/uImage \
+            artifacts/kernel.config \
+            > artifacts/SHA256SUMS
+
+          echo "Built artifacts:"
+          ls -lh artifacts
+          echo
+          cat artifacts/SHA256SUMS
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: hg680ka-kernel-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
