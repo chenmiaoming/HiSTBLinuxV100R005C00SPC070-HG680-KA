@@ -88,8 +88,12 @@ else
 BUILD=release
 endif
 
-HI_GPU_PROFILING=y
-HI_GPU_INTERNAL_PROFILING=n
+# Keep the vendor defaults, but allow board profiles to disable profiling.
+# The original unconditional assignments made CONFIG_MALI400_PROFILING stay
+# enabled even when the kernel tracing infrastructure was trimmed, which leaves
+# the Mali integration with inconsistent compile-time assumptions.
+HI_GPU_PROFILING ?= y
+HI_GPU_INTERNAL_PROFILING ?= n
 
 #profiling
 ifeq ($(CFG_HI_ADVCA_SUPPORT), y)

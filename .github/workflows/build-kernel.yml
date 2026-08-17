@@ -1,4 +1,4 @@
-name: Build Linux kernel
+name: Build HG-680-KA Linux kernel
 
 on:
   workflow_dispatch:
@@ -35,17 +35,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-kernel-${{ github.workflow }}-${{ github.ref }}
+  group: build-hg680ka-kernel-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build-kernel:
-    name: hi3798mv310 / arm-histbv320
+    name: HG-680-KA / ARMv7 / arm-histbv320
     runs-on: ubuntu-22.04
     timeout-minutes: 60
 
     steps:
-      - name: Checkout SDK
+      - name: Checkout HG-680-KA SDK
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
@@ -60,26 +60,43 @@ jobs:
             libssl-dev \
             libncurses-dev
 
-      - name: Build Linux kernel
+      - name: Build HG-680-KA Linux kernel
         shell: bash
         run: |
           set -euo pipefail
           export SHELL=/bin/bash
 
-          # Keep CI deterministic: always select the MV310 32-bit ARM profile
-          # used by the HG680-KA bring-up instead of relying on a previously
-          # generated cfg.mak in the working tree.
-          cp configs/hi3798mv310/hi3798mv31dmg_hi3798mv310_cfg.mak cfg.mak
+          # Use the board-specific profile. It inherits the vendor MV310
+          # baseline and merges hg680-ka.config into the kernel configuration.
+          cp configs/hi3798mv310/HG-680-KA_cfg.mak cfg.mak
 
           source ./env.sh
 
+          echo "Board profile: HG-680-KA"
           echo "Toolchain:"
           arm-histbv320-linux-gcc --version | head -n 1
           echo "Parallel jobs: $(nproc)"
 
           make linux -j"$(nproc)"
 
-      - name: Collect kernel artifacts
+      - name: Verify HG-680-KA kernel configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KCONFIG="$(find out -type f -path '*/obj/source/kernel/linux-4.4.y/.config' -print -quit)"
+          test -n "$KCONFIG"
+
+          grep -Fx 'CONFIG_LOCALVERSION="-HG680-KA"' "$KCONFIG"
+          grep -Fx '# CONFIG_USB_STORAGE_DEBUG is not set' "$KCONFIG"
+          grep -Fx 'CONFIG_EXT4_FS=y' "$KCONFIG"
+          grep -Fx 'CONFIG_MMC=y' "$KCONFIG"
+          grep -Fx 'CONFIG_CFG80211=y' "$KCONFIG"
+
+          echo "Verified board-specific kernel configuration:"
+          grep -E '^(CONFIG_LOCALVERSION=|CONFIG_EXT4_FS=|CONFIG_MMC=|CONFIG_CFG80211=|# CONFIG_USB_STORAGE_DEBUG)' "$KCONFIG"
+
+      - name: Collect HG-680-KA kernel artifacts
         shell: bash
         run: |
           set -euo pipefail
@@ -95,12 +112,12 @@ jobs:
 
           cp "$KERNEL_BIN" artifacts/hi_kernel.bin
           cp "$UIMAGE" artifacts/uImage
-          cp "$KCONFIG" artifacts/kernel.config
+          cp "$KCONFIG" artifacts/HG-680-KA.config
 
           sha256sum \
             artifacts/hi_kernel.bin \
             artifacts/uImage \
-            artifacts/kernel.config \
+            artifacts/HG-680-KA.config \
             > artifacts/SHA256SUMS
 
           echo "Built artifacts:"
@@ -108,10 +125,10 @@ jobs:
           echo
           cat artifacts/SHA256SUMS
 
-      - name: Upload kernel artifacts
+      - name: Upload HG-680-KA kernel artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: hg680ka-kernel-${{ github.sha }}
+          name: HG-680-KA-kernel-${{ github.sha }}
           path: artifacts/
           if-no-files-found: error
           compression-level: 0
