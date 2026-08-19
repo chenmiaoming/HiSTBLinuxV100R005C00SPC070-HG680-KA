@@ -12,3 +12,16 @@ config HIMCIV300_SDIO_SYNOPSYS
 	select MMC_BLOCK_BOUNCE
 	help
 	  This selects the mmc family device.
+
+config HG680KA_SDIO_DETECT
+	tristate "FiberHome HG-680-KA SDIO power/card-detect helper"
+	depends on ARCH_HI3798MV310 && OF && GPIOLIB
+	help
+	  Build the board helper used during HG-680-KA Wi-Fi Phase A bring-up.
+	  The helper controls WLAN_REG_ON through GPIO4_3 and asserts SDIO1
+	  card-present through bit 0 of the HiSilicon system-control register at
+	  0xf8a20008.  It does not contain an MT7668 WLAN or Bluetooth driver.
+
+	  Build this as a module during Phase A.  Loading hi_sdio_detect.ko
+	  should cause the on-board MediaTek SDIO function (expected 037a:7608)
+	  to enumerate on the existing HiSilicon MMC/SDIO host.

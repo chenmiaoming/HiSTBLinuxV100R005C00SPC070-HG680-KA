@@ -8,12 +8,10 @@
  *  Simple MMC power sequence management
  */
 #include <linux/clk.h>
-#include <linux/delay.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/device.h>
 #include <linux/err.h>
-#include <linux/of.h>
 #include <linux/of_gpio.h>
 #include <linux/gpio/consumer.h>
 
@@ -24,8 +22,6 @@
 struct mmc_pwrseq_simple {
 	struct mmc_pwrseq pwrseq;
 	bool clk_enabled;
-	u32 post_power_on_delay_ms;
-	u32 power_off_delay_us;
 	struct clk *ext_clk;
 	struct gpio_descs *reset_gpios;
 };
@@ -63,9 +59,6 @@ static void mmc_pwrseq_simple_post_power_on(struct mmc_host *host)
 					struct mmc_pwrseq_simple, pwrseq);
 
 	mmc_pwrseq_simple_set_gpios_value(pwrseq, 0);
-
-	if (pwrseq->post_power_on_delay_ms)
-		msleep(pwrseq->post_power_on_delay_ms);
 }
 
 static void mmc_pwrseq_simple_power_off(struct mmc_host *host)
@@ -74,10 +67,6 @@ static void mmc_pwrseq_simple_power_off(struct mmc_host *host)
 					struct mmc_pwrseq_simple, pwrseq);
 
 	mmc_pwrseq_simple_set_gpios_value(pwrseq, 1);
-
-	if (pwrseq->power_off_delay_us)
-		usleep_range(pwrseq->power_off_delay_us,
-			     2 * pwrseq->power_off_delay_us);
 
 	if (!IS_ERR(pwrseq->ext_clk) && pwrseq->clk_enabled) {
 		clk_disable_unprepare(pwrseq->ext_clk);
@@ -127,11 +116,6 @@ struct mmc_pwrseq *mmc_pwrseq_simple_alloc(struct mmc_host *host,
 		ret = PTR_ERR(pwrseq->reset_gpios);
 		goto clk_put;
 	}
-
-	of_property_read_u32(dev->of_node, "post-power-on-delay-ms",
-			     &pwrseq->post_power_on_delay_ms);
-	of_property_read_u32(dev->of_node, "power-off-delay-us",
-			     &pwrseq->power_off_delay_us);
 
 	pwrseq->pwrseq.ops = &mmc_pwrseq_simple_ops;
 

@@ -1,0 +1,27 @@
+FiberHome HG-680-KA SDIO power/card-detect helper
+================================================
+
+This binding describes the small board-specific helper used to reproduce the
+stock HG-680-KA hi_sdio_detect.ko sequence during SDIO bring-up.  It is not a
+Wi-Fi device binding and does not describe the MT7668 function itself.
+
+Required properties:
+- compatible: must be "fiberhome,hg680-ka-sdio-power"
+- reg: physical system-control register containing the SDIO1 card-present bit;
+  on HG-680-KA this is <0xf8a20008 0x4> and bit 0 is used
+- wlan-reg-on-gpios: GPIO driving WLAN_REG_ON; on HG-680-KA this is GPIO4_3,
+  active high
+
+Example:
+
+	sdio-wifi-power@0xf8a20008 {
+		compatible = "fiberhome,hg680-ka-sdio-power";
+		reg = <0xf8a20008 0x4>;
+		wlan-reg-on-gpios = <&gpio4 3 GPIO_ACTIVE_HIGH>;
+	};
+
+The Phase-A driver is normally built as hi_sdio_detect.ko.  Loading the module
+powers WLAN_REG_ON, waits for the module to settle, and asserts SDIO1
+card-present.  The expected next observable result is enumeration of the
+MediaTek SDIO function (vendor 0x037a, device 0x7608).  Firmware loading and a
+WLAN network interface belong to the later driver phase.
