@@ -1,0 +1,429 @@
+name: Build HG-680-KA system image
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - hg680ka-wifi-phase-a
+    paths:
+      - .github/workflows/build-system-image.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-hg680ka-system-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-system-image:
+    name: HG-680-KA / kernel + Ubuntu 22.04 ARMHF + USB image
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    env:
+      ROOTFS: ${{ github.workspace }}/build/rootfs
+      ARTIFACTS: ${{ github.workspace }}/artifacts
+      UBUNTU_SUITE: jammy
+      UBUNTU_MIRROR: http://ports.ubuntu.com/ubuntu-ports
+      IMAGE_SIZE_MIB: 4096
+
+    steps:
+      - name: Checkout HG-680-KA SDK
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libncurses-dev \
+            debootstrap \
+            qemu-user-static \
+            binfmt-support \
+            parted \
+            dosfstools \
+            e2fsprogs \
+            rsync \
+            zstd \
+            kmod
+
+      - name: Build HG-680-KA Linux kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SHELL=/bin/bash
+
+          cp configs/hi3798mv310/HG-680-KA_cfg.mak cfg.mak
+          source ./env.sh
+
+          echo "Board profile: HG-680-KA"
+          arm-histbv320-linux-gcc --version | head -n 1
+          make linux -j"$(nproc)"
+
+          KERNEL_SRC="$GITHUB_WORKSPACE/source/kernel/linux-4.4.y"
+          KERNEL_OUT="$(find out -type d -path '*/obj/source/kernel/linux-4.4.y' -print -quit)"
+          KERNEL_BIN="$(find out -type f -path '*/image/emmc_image/hi_kernel.bin' -print -quit)"
+          UIMAGE="$(find out -type f -path '*/obj/source/kernel/linux-4.4.y/arch/arm/boot/uImage' -print -quit)"
+          DTB="$(find out -type f -path '*/obj/source/kernel/linux-4.4.y/arch/arm/boot/dts/hi3798mv310.dtb' -print -quit)"
+          KCONFIG="$KERNEL_OUT/.config"
+
+          test -d "$KERNEL_OUT"
+          test -f "$KERNEL_BIN"
+          test -f "$UIMAGE"
+          test -f "$DTB"
+          test -f "$KCONFIG"
+
+          KERNEL_RELEASE="$(make -s -C "$KERNEL_SRC" O="$KERNEL_OUT" ARCH=arm CROSS_COMPILE=arm-histbv320-linux- kernelrelease)"
+          test -n "$KERNEL_RELEASE"
+
+          echo "KERNEL_SRC=$KERNEL_SRC" >> "$GITHUB_ENV"
+          echo "KERNEL_OUT=$KERNEL_OUT" >> "$GITHUB_ENV"
+          echo "KERNEL_BIN=$KERNEL_BIN" >> "$GITHUB_ENV"
+          echo "UIMAGE=$UIMAGE" >> "$GITHUB_ENV"
+          echo "DTB=$DTB" >> "$GITHUB_ENV"
+          echo "KCONFIG=$KCONFIG" >> "$GITHUB_ENV"
+          echo "KERNEL_RELEASE=$KERNEL_RELEASE" >> "$GITHUB_ENV"
+
+          echo "Kernel release: $KERNEL_RELEASE"
+          ls -lh "$KERNEL_BIN" "$UIMAGE" "$DTB" "$KCONFIG"
+
+      - name: Build Ubuntu 22.04 ARMHF rootfs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo rm -rf "$ROOTFS"
+          sudo mkdir -p "$ROOTFS"
+
+          PACKAGES="ubuntu-minimal,systemd-sysv,openssh-server,iproute2,net-tools,kmod,procps,sudo,ca-certificates,vim-tiny,e2fsprogs,iputils-ping,rsync,less"
+
+          sudo debootstrap \
+            --arch=armhf \
+            --foreign \
+            --variant=minbase \
+            --include="$PACKAGES" \
+            "$UBUNTU_SUITE" \
+            "$ROOTFS" \
+            "$UBUNTU_MIRROR"
+
+          sudo cp /usr/bin/qemu-arm-static "$ROOTFS/usr/bin/qemu-arm-static"
+
+          sudo tee "$ROOTFS/usr/sbin/policy-rc.d" >/dev/null <<'EOF'
+          #!/bin/sh
+          exit 101
+          EOF
+          sudo chmod +x "$ROOTFS/usr/sbin/policy-rc.d"
+
+          cleanup_chroot() {
+            sudo umount -R "$ROOTFS/dev" 2>/dev/null || true
+            sudo umount -R "$ROOTFS/sys" 2>/dev/null || true
+            sudo umount "$ROOTFS/proc" 2>/dev/null || true
+          }
+          trap cleanup_chroot EXIT
+
+          sudo mount -t proc proc "$ROOTFS/proc"
+          sudo mount --rbind /sys "$ROOTFS/sys"
+          sudo mount --make-rslave "$ROOTFS/sys"
+          sudo mount --rbind /dev "$ROOTFS/dev"
+          sudo mount --make-rslave "$ROOTFS/dev"
+
+          sudo chroot "$ROOTFS" /usr/bin/qemu-arm-static /bin/sh /debootstrap/debootstrap --second-stage
+
+          sudo tee "$ROOTFS/etc/apt/sources.list" >/dev/null <<EOF
+          deb $UBUNTU_MIRROR $UBUNTU_SUITE main restricted universe multiverse
+          deb $UBUNTU_MIRROR $UBUNTU_SUITE-updates main restricted universe multiverse
+          deb $UBUNTU_MIRROR $UBUNTU_SUITE-security main restricted universe multiverse
+          EOF
+
+          echo 'hg680ka' | sudo tee "$ROOTFS/etc/hostname" >/dev/null
+          sudo tee "$ROOTFS/etc/hosts" >/dev/null <<'EOF'
+          127.0.0.1 localhost
+          127.0.1.1 hg680ka
+          ::1       localhost ip6-localhost ip6-loopback
+          ff02::1   ip6-allnodes
+          ff02::2   ip6-allrouters
+          EOF
+
+          printf 'root:admin\n' | sudo chroot "$ROOTFS" /usr/bin/qemu-arm-static /usr/sbin/chpasswd
+
+          sudo mkdir -p "$ROOTFS/etc/ssh/sshd_config.d"
+          sudo tee "$ROOTFS/etc/ssh/sshd_config.d/99-hg680ka.conf" >/dev/null <<'EOF'
+          PermitRootLogin yes
+          PasswordAuthentication yes
+          EOF
+
+          sudo mkdir -p "$ROOTFS/etc/systemd/network"
+          sudo tee "$ROOTFS/etc/systemd/network/20-eth0.network" >/dev/null <<'EOF'
+          [Match]
+          Name=eth0
+
+          [Link]
+          RequiredForOnline=no
+
+          [Network]
+          DHCP=ipv4
+          IPv6AcceptRA=yes
+          EOF
+
+          sudo mkdir -p "$ROOTFS/etc/systemd/journald.conf.d"
+          sudo tee "$ROOTFS/etc/systemd/journald.conf.d/hg680ka.conf" >/dev/null <<'EOF'
+          [Journal]
+          Storage=volatile
+          RuntimeMaxUse=16M
+          EOF
+
+          sudo tee "$ROOTFS/etc/fstab" >/dev/null <<'EOF'
+          LABEL=ubuntu-root /     ext4 defaults,noatime 0 1
+          LABEL=HGBOOT      /boot vfat defaults,noatime,nofail 0 2
+          EOF
+
+          sudo systemctl --root="$ROOTFS" enable systemd-networkd.service
+          sudo systemctl --root="$ROOTFS" enable ssh.service
+          sudo systemctl --root="$ROOTFS" enable serial-getty@ttyAMA0.service
+          sudo systemctl --root="$ROOTFS" mask systemd-networkd-wait-online.service || true
+
+          if [ -f "$ROOTFS/lib/systemd/system/systemd-resolved.service" ]; then
+            sudo systemctl --root="$ROOTFS" enable systemd-resolved.service
+            sudo rm -f "$ROOTFS/etc/resolv.conf"
+            sudo ln -s ../run/systemd/resolve/stub-resolv.conf "$ROOTFS/etc/resolv.conf"
+          fi
+
+          sudo truncate -s 0 "$ROOTFS/etc/machine-id"
+          sudo rm -f "$ROOTFS/var/lib/dbus/machine-id"
+
+          sudo chroot "$ROOTFS" /usr/bin/qemu-arm-static /usr/bin/apt-get clean || true
+          sudo rm -rf "$ROOTFS/var/lib/apt/lists/"*
+
+          cleanup_chroot
+          trap - EXIT
+          sudo rm -f "$ROOTFS/usr/sbin/policy-rc.d"
+          sudo rm -f "$ROOTFS/usr/bin/qemu-arm-static"
+
+          echo "Ubuntu rootfs size:"
+          sudo du -sh "$ROOTFS"
+
+      - name: Install kernel modules into Ubuntu rootfs
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ./env.sh
+
+          sudo env PATH="$PATH" make \
+            -C "$KERNEL_SRC" \
+            O="$KERNEL_OUT" \
+            ARCH=arm \
+            CROSS_COMPILE=arm-histbv320-linux- \
+            INSTALL_MOD_PATH="$ROOTFS" \
+            modules_install
+
+          sudo rm -f \
+            "$ROOTFS/lib/modules/$KERNEL_RELEASE/build" \
+            "$ROOTFS/lib/modules/$KERNEL_RELEASE/source"
+
+          sudo depmod -b "$ROOTFS" "$KERNEL_RELEASE"
+
+          MODULE_COUNT="$(find "$ROOTFS/lib/modules/$KERNEL_RELEASE" -type f -name '*.ko' | wc -l)"
+          echo "Installed kernel modules: $MODULE_COUNT"
+          test "$MODULE_COUNT" -gt 0
+
+          if find "$ROOTFS/lib/modules/$KERNEL_RELEASE" -type f -name 'hi_sdio_detect.ko' -print -quit | grep -q .; then
+            echo "Phase A SDIO helper is installed in rootfs:"
+            find "$ROOTFS/lib/modules/$KERNEL_RELEASE" -type f -name 'hi_sdio_detect.ko' -print
+          fi
+
+      - name: Stage kernel and package rootfs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACTS/kernel"
+          sudo mkdir -p "$ROOTFS/boot"
+
+          cp "$KERNEL_BIN" "$ARTIFACTS/kernel/hi_kernel.bin"
+          cp "$UIMAGE" "$ARTIFACTS/kernel/uImage"
+          cp "$DTB" "$ARTIFACTS/kernel/hi3798mv310.dtb"
+          cp "$KCONFIG" "$ARTIFACTS/kernel/HG-680-KA.config"
+
+          sudo cp "$KERNEL_BIN" "$ROOTFS/boot/hi_kernel.bin"
+          sudo cp "$DTB" "$ROOTFS/boot/hi3798mv310.dtb"
+          sudo cp "$KCONFIG" "$ROOTFS/boot/HG-680-KA.config"
+
+          sudo tar \
+            --numeric-owner \
+            --xattrs \
+            --acls \
+            -C "$ROOTFS" \
+            -cpf - . \
+            | zstd -T0 -10 -o "$ARTIFACTS/HG680KA-ubuntu-22.04-armhf-rootfs.tar.zst"
+
+          sha256sum "$ARTIFACTS/kernel/"* > "$ARTIFACTS/kernel/SHA256SUMS"
+          sha256sum "$ARTIFACTS/HG680KA-ubuntu-22.04-armhf-rootfs.tar.zst" > "$ARTIFACTS/rootfs-SHA256SUMS"
+
+      - name: Build directly writable USB image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="$GITHUB_WORKSPACE/build/HG680KA-ubuntu-22.04-armhf.img"
+          MOUNT_ROOT="$GITHUB_WORKSPACE/build/image-root"
+          mkdir -p "$(dirname "$IMAGE")" "$MOUNT_ROOT" "$ARTIFACTS/image"
+
+          truncate -s "${IMAGE_SIZE_MIB}MiB" "$IMAGE"
+          sudo parted -s "$IMAGE" mklabel msdos
+          sudo parted -s "$IMAGE" mkpart primary fat32 1MiB 257MiB
+          sudo parted -s "$IMAGE" set 1 boot on
+          sudo parted -s "$IMAGE" mkpart primary ext4 257MiB 100%
+
+          LOOP="$(sudo losetup --find --show --partscan "$IMAGE")"
+
+          cleanup_image() {
+            mountpoint -q "$MOUNT_ROOT/boot" && sudo umount "$MOUNT_ROOT/boot" || true
+            mountpoint -q "$MOUNT_ROOT" && sudo umount "$MOUNT_ROOT" || true
+            [ -n "${LOOP:-}" ] && sudo losetup -d "$LOOP" 2>/dev/null || true
+          }
+          trap cleanup_image EXIT
+
+          sudo udevadm settle
+          test -b "${LOOP}p1"
+          test -b "${LOOP}p2"
+
+          sudo mkfs.vfat -F 32 -n HGBOOT "${LOOP}p1"
+          sudo mkfs.ext4 -F -L ubuntu-root -O '^64bit,^metadata_csum' "${LOOP}p2"
+
+          sudo mount "${LOOP}p2" "$MOUNT_ROOT"
+          sudo mkdir -p "$MOUNT_ROOT/boot"
+          sudo rsync -aHAX --numeric-ids --exclude='/boot/*' "$ROOTFS/" "$MOUNT_ROOT/"
+
+          sudo mount "${LOOP}p1" "$MOUNT_ROOT/boot"
+          sudo cp "$KERNEL_BIN" "$MOUNT_ROOT/boot/hi_kernel.bin"
+          sudo cp "$UIMAGE" "$MOUNT_ROOT/boot/uImage"
+          sudo cp "$DTB" "$MOUNT_ROOT/boot/hi3798mv310.dtb"
+          sudo cp "$KCONFIG" "$MOUNT_ROOT/boot/HG-680-KA.config"
+
+          sudo tee "$MOUNT_ROOT/boot/README-HG680KA.txt" >/dev/null <<'EOF'
+          FiberHome HG-680-KA Ubuntu 22.04 ARMHF development image
+
+          Root login:
+            user: root
+            password: admin
+
+          Fastboot test boot:
+            usb start
+            fatload usb 0:1 0x01FFBFC0 hi_kernel.bin
+            setenv bootargs root=/dev/sda2 rootwait rw console=ttyAMA0,115200 loglevel=7
+            bootm 0x01FFBFC0
+
+          Kernel modules are already installed under /lib/modules/<kernel-release>/.
+          For Wi-Fi Phase A, if hi_sdio_detect is present, load it with:
+            modprobe hi_sdio_detect
+          EOF
+
+          sync
+          sudo umount "$MOUNT_ROOT/boot"
+          sudo umount "$MOUNT_ROOT"
+
+          sudo e2fsck -f -y "${LOOP}p2"
+          sudo fsck.vfat -n "${LOOP}p1"
+          sudo losetup -d "$LOOP"
+          LOOP=""
+          trap - EXIT
+
+          zstd -T0 -10 -f "$IMAGE" -o "$ARTIFACTS/image/HG680KA-ubuntu-22.04-armhf.img.zst"
+
+          cat > "$ARTIFACTS/image/write-usb.sh" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          if [ "$#" -ne 1 ]; then
+            echo "Usage: $0 /dev/sdX" >&2
+            exit 2
+          fi
+
+          DEV="$1"
+          IMG="$(dirname "$0")/HG680KA-ubuntu-22.04-armhf.img.zst"
+
+          if [ ! -b "$DEV" ]; then
+            echo "Not a block device: $DEV" >&2
+            exit 2
+          fi
+
+          echo "WARNING: all data on $DEV will be destroyed."
+          lsblk "$DEV"
+          read -r -p "Type YES to continue: " ANSWER
+          [ "$ANSWER" = "YES" ] || exit 1
+
+          sudo umount "${DEV}"?* 2>/dev/null || true
+          zstd -dc "$IMG" | sudo dd of="$DEV" bs=4M iflag=fullblock status=progress conv=fsync
+          sync
+          echo "Image written successfully."
+          EOF
+          chmod +x "$ARTIFACTS/image/write-usb.sh"
+
+          cat > "$ARTIFACTS/image/README.txt" <<EOF
+          HG-680-KA Ubuntu 22.04 ARMHF USB image
+
+          Image layout:
+            MBR
+            partition 1: FAT32, label HGBOOT, 256 MiB
+            partition 2: ext4, label ubuntu-root, remainder of 4 GiB image
+
+          Root account:
+            root / admin
+
+          Write to a USB drive on Linux:
+            ./write-usb.sh /dev/sdX
+
+          Or manually:
+            zstd -dc HG680KA-ubuntu-22.04-armhf.img.zst | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
+
+          Fastboot boot commands:
+            usb start
+            fatload usb 0:1 0x01FFBFC0 hi_kernel.bin
+            setenv bootargs root=/dev/sda2 rootwait rw console=ttyAMA0,115200 loglevel=7
+            bootm 0x01FFBFC0
+
+          Kernel release: $KERNEL_RELEASE
+          Kernel modules are already installed in the root filesystem.
+          EOF
+
+          sha256sum \
+            "$ARTIFACTS/image/HG680KA-ubuntu-22.04-armhf.img.zst" \
+            > "$ARTIFACTS/image/SHA256SUMS"
+
+          echo "Final artifacts:"
+          find "$ARTIFACTS" -maxdepth 2 -type f -printf '%p %k KiB\n' | sort
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: HG-680-KA-kernel-${{ github.sha }}
+          path: artifacts/kernel/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Upload Ubuntu rootfs artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: HG-680-KA-ubuntu-rootfs-${{ github.sha }}
+          path: |
+            artifacts/HG680KA-ubuntu-22.04-armhf-rootfs.tar.zst
+            artifacts/rootfs-SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Upload directly writable USB image artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: HG-680-KA-usb-image-${{ github.sha }}
+          path: artifacts/image/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
