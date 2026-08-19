@@ -27,16 +27,20 @@
 
 	/*
 	 * Board helper matching the stock hi_sdio_detect.ko sequence:
-	 * GPIO4_3 (global GPIO35) controls WLAN_REG_ON and bit 0 at
-	 * 0xf9a20008 feeds SDIO1 card-present into the HiSilicon host.
+	 * GPIO4_3 (global GPIO35) controls WLAN_REG_ON and bit 0 at physical
+	 * 0xf8a20008 feeds SDIO1 card-present into the HiSilicon host.
+	 *
+	 * On 32-bit MV310 kernels __io_address(0xf8a20008) becomes the static
+	 * virtual address 0xf9a20008.  Device-tree reg values are physical, so
+	 * this node must contain 0xf8a20008 rather than the mapped virtual value.
 	 *
 	 * This helper is built as hi_sdio_detect.ko for Phase A so that the
 	 * SDIO function can be powered/enumerated independently of the WLAN
 	 * driver.  Loading the module should make 037a:7608 appear on SDIO.
 	 */
-	hg680ka_sdio_power: sdio-wifi-power@0xf9a20008 {
+	hg680ka_sdio_power: sdio-wifi-power@0xf8a20008 {
 		compatible = "fiberhome,hg680-ka-sdio-power";
-		reg = <0xf9a20008 0x4>;
+		reg = <0xf8a20008 0x4>;
 		wlan-reg-on-gpios = <&gpio4 3 GPIO_ACTIVE_HIGH>;
 		status = "okay";
 	};

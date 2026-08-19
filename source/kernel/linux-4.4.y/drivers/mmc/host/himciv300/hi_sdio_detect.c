@@ -6,7 +6,11 @@
  * platform glue in this SDK agree on the board wiring:
  *
  *   WLAN_REG_ON = GPIO4_3 (global GPIO35)
- *   SDIO1 card-present control = bit 0 of physical register 0xf9a20008
+ *   SDIO1 card-present control = bit 0 of physical register 0xf8a20008
+ *
+ * The stock 32-bit kernel accesses that physical register through the static
+ * IO mapping __io_address(0xf8a20008) == 0xf9a20008.  This driver uses
+ * of_iomap(), so its DT reg value must remain the physical 0xf8a20008 value.
  *
  * Phase A keeps this helper separate from the actual MT7668 driver.  Loading
  * hi_sdio_detect.ko powers the module and asserts card-present so that the MMC
@@ -51,6 +55,7 @@ static void hg680ka_set_card_present(struct hg680ka_sdio_detect *priv,
 static int hg680ka_sdio_detect_probe(struct platform_device *pdev)
 {
 	struct hg680ka_sdio_detect *priv;
+	u32 card_detect_ctrl;
 
 	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -65,9 +70,9 @@ static int hg680ka_sdio_detect_probe(struct platform_device *pdev)
 	}
 
 	/*
-	 * of_iomap() is intentional here.  0xf9a20008 sits inside the vendor
-	 * system-control register window, which may already overlap another
-	 * HiSilicon mapping.  Avoid requesting an exclusive iomem resource.
+	 * of_iomap() consumes the physical DT address.  The same register is
+	 * referred to as 0xf9a20008 in stock ARM32 disassembly only because the
+	 * MV310 static IO mapping adds 0x01000000 to physical 0xf8a20008.
 	 */
 	priv->card_detect_reg = of_iomap(pdev->dev.of_node, 0);
 	if (!priv->card_detect_reg) {
@@ -83,10 +88,12 @@ static int hg680ka_sdio_detect_probe(struct platform_device *pdev)
 	msleep(HG680KA_POWER_SETTLE_MS);
 
 	hg680ka_set_card_present(priv, true);
+	card_detect_ctrl = readl(priv->card_detect_reg);
 	msleep(HG680KA_DETECT_SETTLE_MS);
 
 	dev_info(&pdev->dev,
-		 "WLAN_REG_ON high; SDIO1 card-present asserted (expect MT7668 037a:7608)\n");
+		 "WLAN_REG_ON high; SDIO1 card-present asserted, ctrl=0x%08x (expect MT7668 037a:7608)\n",
+		 card_detect_ctrl);
 
 	return 0;
 }
