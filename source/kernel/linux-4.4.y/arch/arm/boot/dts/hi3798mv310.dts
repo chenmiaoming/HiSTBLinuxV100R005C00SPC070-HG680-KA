@@ -50,6 +50,20 @@
 	 * its historical hi3798mv310,himciv200 DT compatible.  This matches
 	 * the vendor MV310 DTS backup and the host driver's f9c40000 SDIO1
 	 * clock/phase handling.
+	 *
+	 * Do not advertise UHS-I on this board yet.  The vendor DTS uses
+	 * 0x8007000f, whose 0x00070000 bits advertise SDR25/SDR50/SDR104.
+	 * That makes the MMC core send CMD11 and attempt a 1.8-V signalling
+	 * transition.  However himciv300_switch_voltage() explicitly returns
+	 * without doing the voltage switch for host index 2 (SDIO1).  Hardware
+	 * testing on HG-680-KA then shows a first-pass CMD52 timeout after CMD11
+	 * and only succeeds after MMC-core retry/fallback.
+	 *
+	 * 0x8000000f retains the vendor base capabilities (4-bit, SD high-speed,
+	 * SDIO IRQ and HW reset) while removing the three UHS capability bits.
+	 * The MT7668 has already been verified to enumerate reliably at the
+	 * resulting 3.3-V, 4-bit, 50-MHz SD high-speed mode.  UHS can be revisited
+	 * later only with a real SDIO1 voltage-switch implementation.
 	 */
 	hg680ka_sdio: himciv200.SD@0xf9c40000 {
 		compatible = "hi3798mv310,himciv200";
@@ -59,7 +73,7 @@
 		clocks = <&hisilicon_clock PERI_CRG163_SDIO2>;
 		clock-names = "clk";
 
-		caps = <0x8007000f>;
+		caps = <0x8000000f>;
 		caps2 = <0x4000>;
 		max-frequency = <50000000>;
 		status = "okay";
