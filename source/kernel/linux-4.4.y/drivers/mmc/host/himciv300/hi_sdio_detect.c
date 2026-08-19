@@ -6,7 +6,7 @@
  * platform glue in this SDK agree on the board wiring:
  *
  *   WLAN_REG_ON = GPIO4_3 (global GPIO35)
- *   SDIO1 card-present control = bit 0 of physical register 0xf8a20008
+ *   SDIO1 card-present control = bit 0 of physical register 0xf9a20008
  *
  * Phase A keeps this helper separate from the actual MT7668 driver.  Loading
  * hi_sdio_detect.ko powers the module and asserts card-present so that the MMC
@@ -65,10 +65,9 @@ static int hg680ka_sdio_detect_probe(struct platform_device *pdev)
 	}
 
 	/*
-	 * of_iomap() is intentional here.  0xf8a20008 sits inside the vendor
-	 * system-control register window, which is also described by the clock
-	 * block.  Requesting an exclusive iomem resource would therefore clash
-	 * with the existing HiSilicon clock/reset mapping.
+	 * of_iomap() is intentional here.  0xf9a20008 sits inside the vendor
+	 * system-control register window, which may already overlap another
+	 * HiSilicon mapping.  Avoid requesting an exclusive iomem resource.
 	 */
 	priv->card_detect_reg = of_iomap(pdev->dev.of_node, 0);
 	if (!priv->card_detect_reg) {
