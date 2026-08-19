@@ -1,0 +1,118 @@
+name: Build HG-680-KA MT7668 Wi-Fi Phase B
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - hg680ka-wifi-phase-b
+    paths:
+      - .github/workflows/build-mt7668-phase-b.yml
+      - scripts/hg680ka/build-mt7668-wifi.sh
+      - env.sh
+      - base.mak
+      - cfg.mak
+      - configs/hi3798mv310/**
+      - source/kernel/**
+      - source/common/drv/**
+      - source/msp/drv/**
+      - tools/linux/toolchains/arm-histbv320-linux/**
+      - tools/linux/utils/**
+  pull_request:
+    paths:
+      - .github/workflows/build-mt7668-phase-b.yml
+      - scripts/hg680ka/build-mt7668-wifi.sh
+      - env.sh
+      - base.mak
+      - cfg.mak
+      - configs/hi3798mv310/**
+      - source/kernel/**
+      - source/common/drv/**
+      - source/msp/drv/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-hg680ka-mt7668-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-mt7668:
+    name: HG-680-KA / ARMv7 / MT7668 SDIO
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout HG-680-KA SDK
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            flex \
+            git \
+            kmod \
+            file \
+            libssl-dev \
+            libncurses-dev
+
+      - name: Build HG-680-KA Linux kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SHELL=/bin/bash
+
+          cp configs/hi3798mv310/HG-680-KA_cfg.mak cfg.mak
+          source ./env.sh
+
+          echo "Board profile: HG-680-KA"
+          arm-histbv320-linux-gcc --version | head -n 1
+          make linux -j"$(nproc)"
+
+          KERNEL_OUT="$(find "$GITHUB_WORKSPACE/out" -type d -path '*/obj/source/kernel/linux-4.4.y' -print -quit)"
+          test -n "$KERNEL_OUT"
+          test -f "$KERNEL_OUT/.config"
+          test -f "$KERNEL_OUT/Module.symvers"
+
+          echo "KERNEL_OUT=$KERNEL_OUT" >> "$GITHUB_ENV"
+          echo "Kernel output: $KERNEL_OUT"
+
+      - name: Build MT7668 SDIO Wi-Fi module
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/hg680ka/build-mt7668-wifi.sh
+          scripts/hg680ka/build-mt7668-wifi.sh \
+            "$KERNEL_OUT" \
+            "$GITHUB_WORKSPACE/phase-b-artifacts"
+
+      - name: Verify MT7668 module metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MODULE="$GITHUB_WORKSPACE/phase-b-artifacts/wlan_mt7668_sdio.ko"
+          test -f "$MODULE"
+
+          file "$MODULE"
+          modinfo "$MODULE"
+
+          modinfo "$MODULE" | grep -F 'alias:          sdio:c*v037Ad7608*'
+          modinfo "$MODULE" | grep -F 'depends:        cfg80211'
+
+          # The module must be linked for ARM, not for the x86_64 Actions host.
+          file "$MODULE" | grep -Eq 'ARM|arm'
+
+      - name: Upload Phase B module artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: HG-680-KA-MT7668-Phase-B-${{ github.sha }}
+          path: phase-b-artifacts/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
