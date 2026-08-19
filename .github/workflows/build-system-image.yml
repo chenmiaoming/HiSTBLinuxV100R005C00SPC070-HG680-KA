@@ -67,11 +67,15 @@ jobs:
           arm-histbv320-linux-gcc --version | head -n 1
           make linux -j"$(nproc)"
 
+          # `make -C "$KERNEL_SRC"` changes the working directory before Kbuild
+          # interprets O=.  Therefore all paths exported to later steps must be
+          # absolute; a repo-relative O=out/... would incorrectly resolve below
+          # source/kernel/linux-4.4.y and create a second, unconfigured output tree.
           KERNEL_SRC="$GITHUB_WORKSPACE/source/kernel/linux-4.4.y"
-          KERNEL_OUT="$(find out -type d -path '*/obj/source/kernel/linux-4.4.y' -print -quit)"
-          KERNEL_BIN="$(find out -type f -path '*/image/emmc_image/hi_kernel.bin' -print -quit)"
-          UIMAGE="$(find out -type f -path '*/obj/source/kernel/linux-4.4.y/arch/arm/boot/uImage' -print -quit)"
-          DTB="$(find out -type f -path '*/obj/source/kernel/linux-4.4.y/arch/arm/boot/dts/hi3798mv310.dtb' -print -quit)"
+          KERNEL_OUT="$(find "$GITHUB_WORKSPACE/out" -type d -path '*/obj/source/kernel/linux-4.4.y' -print -quit)"
+          KERNEL_BIN="$(find "$GITHUB_WORKSPACE/out" -type f -path '*/image/emmc_image/hi_kernel.bin' -print -quit)"
+          UIMAGE="$(find "$GITHUB_WORKSPACE/out" -type f -path '*/obj/source/kernel/linux-4.4.y/arch/arm/boot/uImage' -print -quit)"
+          DTB="$(find "$GITHUB_WORKSPACE/out" -type f -path '*/obj/source/kernel/linux-4.4.y/arch/arm/boot/dts/hi3798mv310.dtb' -print -quit)"
           KCONFIG="$KERNEL_OUT/.config"
 
           test -d "$KERNEL_OUT"
@@ -79,6 +83,7 @@ jobs:
           test -f "$UIMAGE"
           test -f "$DTB"
           test -f "$KCONFIG"
+          grep -Fx 'CONFIG_MODULES=y' "$KCONFIG"
 
           KERNEL_RELEASE="$(make -s -C "$KERNEL_SRC" O="$KERNEL_OUT" ARCH=arm CROSS_COMPILE=arm-histbv320-linux- kernelrelease)"
           test -n "$KERNEL_RELEASE"
@@ -92,6 +97,7 @@ jobs:
           echo "KERNEL_RELEASE=$KERNEL_RELEASE" >> "$GITHUB_ENV"
 
           echo "Kernel release: $KERNEL_RELEASE"
+          echo "Kernel output: $KERNEL_OUT"
           ls -lh "$KERNEL_BIN" "$UIMAGE" "$DTB" "$KCONFIG"
 
       - name: Build Ubuntu 22.04 ARMHF rootfs
@@ -224,6 +230,9 @@ jobs:
           set -euo pipefail
           source ./env.sh
 
+          test -f "$KERNEL_OUT/.config"
+          grep -Fx 'CONFIG_MODULES=y' "$KERNEL_OUT/.config"
+
           sudo env PATH="$PATH" make \
             -C "$KERNEL_SRC" \
             O="$KERNEL_OUT" \
@@ -341,7 +350,18 @@ jobs:
           sudo umount "$MOUNT_ROOT/boot"
           sudo umount "$MOUNT_ROOT"
 
+          # e2fsck returns 1 when it successfully corrected filesystem errors and
+          # 2 when corrections would normally require rebooting the host.  This is
+          # an offline image, so both are acceptable; fail only on real fsck errors.
+          set +e
           sudo e2fsck -f -y "${LOOP}p2"
+          E2FSCK_RC=$?
+          set -e
+          case "$E2FSCK_RC" in
+            0|1|2) ;;
+            *) exit "$E2FSCK_RC" ;;
+          esac
+
           sudo fsck.vfat -n "${LOOP}p1"
           sudo losetup -d "$LOOP"
           LOOP=""
