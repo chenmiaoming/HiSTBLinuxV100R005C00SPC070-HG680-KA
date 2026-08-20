@@ -128,11 +128,26 @@ jobs:
             exit 1
           fi
 
+          echo "======== target cfg80211 configuration ========"
+          CFG80211_SETTING="$(grep '^CONFIG_CFG80211=' "$KERNEL_OUT/.config" || true)"
+          printf '%s\n' "${CFG80211_SETTING:-<disabled>}"
+
           DEPENDS_COMPACT="${DEPENDS//[[:space:]]/}"
-          if ! grep -Eq '(^|,)cfg80211(,|$)' <<< "$DEPENDS_COMPACT"; then
-            echo "::error::cfg80211 is missing from the module dependency list"
-            exit 1
-          fi
+          case "$CFG80211_SETTING" in
+            CONFIG_CFG80211=y)
+              echo "cfg80211 is built into vmlinux; an empty module depends field is valid."
+              ;;
+            CONFIG_CFG80211=m)
+              if ! grep -Eq '(^|,)cfg80211(,|$)' <<< "$DEPENDS_COMPACT"; then
+                echo "::error::CONFIG_CFG80211=m but cfg80211 is missing from module dependencies"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::CONFIG_CFG80211 is not enabled in the target kernel"
+              exit 1
+              ;;
+          esac
 
           # The module must be linked for ARM, not for the x86_64 Actions host.
           if ! grep -Eqi 'ARM|arm' <<< "$FILE_INFO"; then
