@@ -22,7 +22,37 @@ Read-only inspection of the HG-680-KA stock Android system found:
 - stock source path embedded in the module points at `device/hisilicon/bigfish/bluetooth/mt7668bs/driver/`
 - firmware files include `mt7668_patch_e1_hdr.bin` and `mt7668_patch_e2_hdr.bin`
 - the same stock firmware directory also contains `EEPROM_MT7668.bin`
-- stock init logic identifies `037A:7668` as `MT7668BS` and loads `btmtk_sdio.ko`
+- stock `wifi.cfg` contains `EfuseBufferModeCal 0`; Phase C records this value but does not assume its semantics without matching source
+- stock init logic identifies `037A:7668` as `MT7668BS`
+
+The stock firmware files observed on this board are:
+
+| File | Size | SHA-256 |
+| --- | ---: | --- |
+| `mt7668_patch_e1_hdr.bin` | about 149 KiB | `519083ebb8318d9cfc8eaaaa7470d1a266c8f32275df3c62e3619d6c07f97389` |
+| `mt7668_patch_e2_hdr.bin` | about 170 KiB | `8a6591d85255a04dcdcddfa79e9d2a0fa9a961016ac3ca6b3dfb3fe716a20330` |
+| `EEPROM_MT7668.bin` | 1024 bytes | `a50c8c95ff37eb3e1d69f26f9b7ccd1c34d95b83ddc89abb835d1157484a4042` |
+| `wifi.cfg` | 846 bytes | `1d48bb445da63a27e47db1af3daf1f32c1967354be8b394e8220beac041e20b3` |
+
+### Stock MT7668 initialization sequence
+
+`/system/etc/init.bt.sh` first loads the board SDIO-detect module, waits for SDIO enumeration, inspects each SDIO `uevent`, and selects a Bluetooth driver by SDIO ID.
+
+For `037A:7668` the MT7668-specific branch is simply:
+
+```text
+hi_sdio_detect.ko
+        |
+        v
+wait for 037A:7668
+        |
+        v
+btmtk_sdio.ko
+```
+
+Unlike the RTL8822BS and QCA6174 branches in the same script, the MT7668 branch does **not** load `hi_rfkill.ko` or `rfkill-hisi-bt.ko` before loading `btmtk_sdio.ko`.
+
+`/system/bin/opt/etc/init.stb.sh` also contains a legacy/fallback path which loads several rfkill modules unconditionally. That fallback is not evidence that the normal MT7668-specific path requires them; the device-ID-driven `init.bt.sh` path above is the better reference for Phase C bring-up.
 
 Do not load the stock 3.18 module into the 4.4.35 kernel.
 
@@ -50,6 +80,18 @@ The published history also contains explicit Linux 4.4 compatibility work and HC
 ## Current target-kernel state
 
 The HG-680-KA kernel already has the Bluetooth core built in, including BR/EDR and LE support. Runtime boot logs show the Bluetooth core and the generic Bluetooth SDIO driver initializing before the MT7668 card enumerates.
+
+Relevant confirmed kernel options include:
+
+```text
+CONFIG_BT=y
+CONFIG_BT_BREDR=y
+CONFIG_BT_LE=y
+CONFIG_BT_HCIBTSDIO=y
+CONFIG_RFKILL=y
+CONFIG_PM=y
+CONFIG_PM_SLEEP=y
+```
 
 The generic `btsdio` driver does not bind `mmc2:0001:2`; the MediaTek-specific function therefore remains available for the Phase C driver.
 
@@ -91,15 +133,16 @@ Required metadata checks include:
 ## Hardware validation order
 
 1. Verify `mmc2:0001:2` is still `037A:7668` and unbound.
-2. Copy only the required stock firmware into `/lib/firmware` on the temporary USB Linux rootfs.
-3. Load the Phase C module.
-4. Verify function 2 binds to the MediaTek Bluetooth SDIO driver.
-5. Verify firmware/ROM patch download succeeds.
-6. Verify `hci0` appears.
-7. Read controller information with BlueZ tools.
-8. Test BR/EDR inquiry.
-9. Test BLE scan.
-10. Exercise unload/reload and repeated scans before considering persistent integration.
+2. Ensure `hi_sdio_detect` has already powered/enumerated the combo device; no additional rfkill module is assumed for the MT7668-specific path.
+3. Copy only the required stock firmware into `/lib/firmware` on the temporary USB Linux rootfs.
+4. Load the Phase C module.
+5. Verify function 2 binds to the MediaTek Bluetooth SDIO driver.
+6. Verify firmware/ROM patch download succeeds.
+7. Verify `hci0` appears.
+8. Read controller information with BlueZ tools.
+9. Test BR/EDR inquiry.
+10. Test BLE scan.
+11. Exercise unload/reload and repeated scans before considering persistent integration.
 
 ## Safety
 
