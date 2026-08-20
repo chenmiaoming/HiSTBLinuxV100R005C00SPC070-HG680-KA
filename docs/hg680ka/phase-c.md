@@ -64,7 +64,9 @@ Google Coral published MediaTek's GPLv2 MT7668 Bluetooth-over-SDIO driver at:
 
 Phase C pins commit:
 
-`0b3cfd4b7d7a39ee33b590a5d380f63924a93940`
+`040ca262f203faec9f1337db5b1b991cfba72ecf`
+
+This is deliberately the revision immediately before Coral commit `dbf041d` (`Set hci_dev's hw_info field`). The later commit assigns `hdev->hw_info`, while the HG-680-KA vendor Linux 4.4.35 `struct hci_dev` has no `hw_info` member. The pinned revision already contains Coral's explicit Linux 4.4 compatibility changes and HCI-device registration support, so it avoids carrying a source edit solely to undo that newer-kernel-only field assignment.
 
 This source family is a strong match for the HG-680-KA stock binary:
 
