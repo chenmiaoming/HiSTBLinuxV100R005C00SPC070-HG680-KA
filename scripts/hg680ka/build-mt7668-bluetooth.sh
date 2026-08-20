@@ -14,11 +14,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 KERNEL_SRC="$REPO_ROOT/source/kernel/linux-4.4.y"
 
-# Google Coral published MediaTek's GPLv2 MT7668 Bluetooth-over-SDIO driver
-# and subsequently added explicit Linux 4.4 compatibility plus HCI device
-# registration.  Pin the source so Phase C stays reproducible.
+# Google Coral published MediaTek's GPLv2 MT7668 Bluetooth-over-SDIO driver.
+# Pin the last revision before dbf041d ("Set hci_dev's hw_info field").
+# That later change assigns hdev->hw_info, but the HG-680-KA vendor Linux 4.4
+# struct hci_dev has no such member.  This revision already contains Coral's
+# explicit Linux 4.4 compatibility work and HCI-device registration support.
 BT_SOURCE_REPO="https://coral.googlesource.com/mt7668-bluetooth-mod"
-BT_SOURCE_COMMIT="0b3cfd4b7d7a39ee33b590a5d380f63924a93940"
+BT_SOURCE_COMMIT="040ca262f203faec9f1337db5b1b991cfba72ecf"
 BT_SOURCE_ROOT="${BT_SOURCE_ROOT:-$REPO_ROOT/.phase-c/mt7668-bluetooth-mod}"
 
 [ -d "$KERNEL_OUT" ] || {
