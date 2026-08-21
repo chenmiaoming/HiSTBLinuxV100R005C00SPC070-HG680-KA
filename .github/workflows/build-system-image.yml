@@ -6,6 +6,13 @@ on:
     branches:
       - main
       - hg680ka-wifi-phase-a
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-system-image.yml'
+      - 'scripts/hg680ka/build-mt7668-wifi.sh'
+      - 'scripts/hg680ka/build-mt7668-bluetooth.sh'
 
 permissions:
   contents: read
@@ -259,6 +266,55 @@ jobs:
             echo "Phase A SDIO helper installed: $PHASE_A_MODULE"
           fi
 
+      - name: Build and install MT7668 Wi-Fi and Bluetooth modules
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          WIFI_OUT="$BUILD_DIR/mt7668-wifi"
+          BT_OUT="$BUILD_DIR/mt7668-bluetooth"
+          MODULE_DIR="$ROOTFS/lib/modules/$KERNEL_RELEASE/extra/hg680ka"
+
+          rm -rf "$WIFI_OUT" "$BT_OUT"
+
+          bash scripts/hg680ka/build-mt7668-wifi.sh \
+            "$KERNEL_OUT" \
+            "$WIFI_OUT"
+
+          bash scripts/hg680ka/build-mt7668-bluetooth.sh \
+            "$KERNEL_OUT" \
+            "$BT_OUT"
+
+          test -f "$WIFI_OUT/wlan_mt7668_sdio.ko"
+          test -f "$BT_OUT/btmtksdio.ko"
+
+          sudo mkdir -p "$MODULE_DIR"
+          sudo install -m 0644 \
+            "$WIFI_OUT/wlan_mt7668_sdio.ko" \
+            "$MODULE_DIR/wlan_mt7668_sdio.ko"
+          sudo install -m 0644 \
+            "$BT_OUT/btmtksdio.ko" \
+            "$MODULE_DIR/btmtksdio.ko"
+
+          sudo depmod -b "$ROOTFS" "$KERNEL_RELEASE"
+
+          grep -F 'sdio:c*v037Ad7608*' \
+            < <(modinfo "$MODULE_DIR/wlan_mt7668_sdio.ko")
+          grep -F 'sdio:c*v037Ad7668*' \
+            < <(modinfo "$MODULE_DIR/btmtksdio.ko")
+          modinfo -F vermagic "$MODULE_DIR/wlan_mt7668_sdio.ko" \
+            | grep -F "$KERNEL_RELEASE"
+          modinfo -F vermagic "$MODULE_DIR/btmtksdio.ko" \
+            | grep -F "$KERNEL_RELEASE"
+
+          grep -F 'extra/hg680ka/wlan_mt7668_sdio.ko' \
+            "$ROOTFS/lib/modules/$KERNEL_RELEASE/modules.dep"
+          grep -F 'extra/hg680ka/btmtksdio.ko' \
+            "$ROOTFS/lib/modules/$KERNEL_RELEASE/modules.dep"
+
+          echo "Bundled HG-680-KA MT7668 modules:"
+          ls -lh "$MODULE_DIR/wlan_mt7668_sdio.ko" "$MODULE_DIR/btmtksdio.ko"
+
       - name: Stage kernel and package rootfs
         shell: bash
         run: |
@@ -346,8 +402,15 @@ jobs:
             bootm 0x01FFBFC0
 
           Kernel modules are already installed under /lib/modules/<kernel-release>/.
+          The validated MT7668 Wi-Fi and Bluetooth SDIO modules are bundled under
+          /lib/modules/<kernel-release>/extra/hg680ka/ and indexed by depmod.
+
           For Wi-Fi Phase A, load the board helper with:
             modprobe hi_sdio_detect
+
+          MT7668 firmware is not redistributed in this image.  Install the
+          board's stock firmware in /lib/firmware before loading the Wi-Fi or
+          Bluetooth driver.
           EOF
 
           sync
@@ -424,6 +487,9 @@ jobs:
 
           Kernel release: $KERNEL_RELEASE
           Kernel modules are already installed in the root filesystem.
+          MT7668 Wi-Fi and Bluetooth modules are bundled under
+          /lib/modules/$KERNEL_RELEASE/extra/hg680ka/.
+          Stock MT7668 firmware is intentionally not redistributed.
           EOF
 
           sha256sum \
