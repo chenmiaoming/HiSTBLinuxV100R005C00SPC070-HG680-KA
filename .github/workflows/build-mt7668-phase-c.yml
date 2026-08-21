@@ -1,0 +1,154 @@
+name: Build HG-680-KA MT7668 Bluetooth Phase C
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - bluetooth/mt7668-phase-c
+    paths:
+      - .github/workflows/build-mt7668-phase-c.yml
+      - scripts/hg680ka/build-mt7668-bluetooth.sh
+      - env.sh
+      - base.mak
+      - cfg.mak
+      - configs/hi3798mv310/**
+      - source/kernel/**
+      - source/common/drv/**
+      - source/msp/drv/**
+      - tools/linux/toolchains/arm-histbv320-linux/**
+      - tools/linux/utils/**
+  pull_request:
+    paths:
+      - .github/workflows/build-mt7668-phase-c.yml
+      - scripts/hg680ka/build-mt7668-bluetooth.sh
+      - env.sh
+      - base.mak
+      - cfg.mak
+      - configs/hi3798mv310/**
+      - source/kernel/**
+      - source/common/drv/**
+      - source/msp/drv/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-hg680ka-mt7668-bt-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-mt7668-bt:
+    name: HG-680-KA / ARMv7 / MT7668 Bluetooth SDIO
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout HG-680-KA SDK
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            flex \
+            git \
+            kmod \
+            file \
+            libssl-dev \
+            libncurses-dev
+
+      - name: Build HG-680-KA Linux kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SHELL=/bin/bash
+
+          cp configs/hi3798mv310/HG-680-KA_cfg.mak cfg.mak
+          source ./env.sh
+
+          echo "Board profile: HG-680-KA"
+          arm-histbv320-linux-gcc --version | head -n 1
+          make linux -j"$(nproc)"
+
+          KERNEL_OUT="$(find "$GITHUB_WORKSPACE/out" -type d -path '*/obj/source/kernel/linux-4.4.y' -print -quit)"
+          test -n "$KERNEL_OUT"
+          test -f "$KERNEL_OUT/.config"
+          test -f "$KERNEL_OUT/Module.symvers"
+
+          echo "KERNEL_OUT=$KERNEL_OUT" >> "$GITHUB_ENV"
+          echo "Kernel output: $KERNEL_OUT"
+
+      - name: Build MT7668 Bluetooth-over-SDIO module
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/hg680ka/build-mt7668-bluetooth.sh
+          scripts/hg680ka/build-mt7668-bluetooth.sh \
+            "$KERNEL_OUT" \
+            "$GITHUB_WORKSPACE/phase-c-artifacts"
+
+      - name: Verify MT7668 Bluetooth module metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MODULE="$GITHUB_WORKSPACE/phase-c-artifacts/btmtksdio.ko"
+
+          if [[ ! -f "$MODULE" ]]; then
+            echo "::error::MT7668 Bluetooth module artifact is missing: $MODULE"
+            exit 1
+          fi
+
+          echo "======== file ========"
+          FILE_INFO="$(file "$MODULE")"
+          printf '%s\n' "$FILE_INFO"
+
+          echo "======== modinfo ========"
+          modinfo "$MODULE"
+
+          echo "======== aliases ========"
+          ALIASES="$(modinfo -F alias "$MODULE" || true)"
+          printf '%s\n' "$ALIASES"
+
+          echo "======== vermagic ========"
+          VERMAGIC="$(modinfo -F vermagic "$MODULE" || true)"
+          printf '%s\n' "$VERMAGIC"
+
+          if ! grep -Fxq 'sdio:c*v037Ad7668*' <<< "$ALIASES"; then
+            echo "::error::MT7668 Bluetooth SDIO modalias sdio:c*v037Ad7668* is missing"
+            exit 1
+          fi
+
+          if [[ "$VERMAGIC" != 4.4.35-HG680-KA* ]]; then
+            echo "::error::unexpected module vermagic: $VERMAGIC"
+            exit 1
+          fi
+
+          if ! grep -Eqi 'ARM|arm' <<< "$FILE_INFO"; then
+            echo "::error::MT7668 Bluetooth module is not an ARM ELF object: $FILE_INFO"
+            exit 1
+          fi
+
+          echo "======== target Bluetooth configuration ========"
+          grep -E '^CONFIG_(BT|BT_BREDR|BT_LE|MMC|PM)=' "$KERNEL_OUT/.config" || true
+
+          grep -Fx 'CONFIG_BT=y' "$KERNEL_OUT/.config"
+          grep -Fx 'CONFIG_BT_BREDR=y' "$KERNEL_OUT/.config"
+          grep -Fx 'CONFIG_BT_LE=y' "$KERNEL_OUT/.config"
+          grep -Fx 'CONFIG_MMC=y' "$KERNEL_OUT/.config"
+          grep -Fx 'CONFIG_PM=y' "$KERNEL_OUT/.config"
+
+          echo "MT7668 Bluetooth module metadata verification passed."
+
+      - name: Upload Phase C module artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: HG-680-KA-MT7668-Bluetooth-Phase-C-${{ github.sha }}
+          path: phase-c-artifacts/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
