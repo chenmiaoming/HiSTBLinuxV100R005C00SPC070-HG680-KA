@@ -6,6 +6,13 @@ on:
     branches:
       - main
       - hg680ka-wifi-phase-a
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-system-image.yml'
+      - 'scripts/hg680ka/build-mt7668-wifi.sh'
+      - 'scripts/hg680ka/build-mt7668-bluetooth.sh'
 
 permissions:
   contents: read
@@ -119,12 +126,17 @@ jobs:
           sudo rm -rf "$ROOTFS"
           sudo mkdir -p "$ROOTFS"
 
-          PACKAGES="ubuntu-minimal,systemd-sysv,openssh-server,iproute2,net-tools,kmod,procps,sudo,ca-certificates,vim-tiny,e2fsprogs,iputils-ping,rsync,less"
+          # HG-680-KA is treated as having no usable battery-backed RTC.
+          # chrony provides network time once connectivity is available, while
+          # fake-hwclock prevents the clock from jumping back to an ancient
+          # default timestamp during early boot.
+          PACKAGES="ubuntu-minimal,systemd-sysv,openssh-server,iproute2,net-tools,kmod,procps,sudo,ca-certificates,vim-tiny,e2fsprogs,iputils-ping,rsync,less,chrony,fake-hwclock"
 
           sudo debootstrap \
             --arch=armhf \
             --foreign \
             --variant=minbase \
+            --components=main,universe \
             --include="$PACKAGES" \
             "$UBUNTU_SUITE" \
             "$ROOTFS" \
@@ -158,6 +170,18 @@ jobs:
           deb $UBUNTU_MIRROR $UBUNTU_SUITE-updates main restricted universe multiverse
           deb $UBUNTU_MIRROR $UBUNTU_SUITE-security main restricted universe multiverse
           EOF
+
+          # Jammy's chrony defaults already use the Ubuntu NTP pools and include
+          # `makestep 1 3`, which is important when a cold boot starts with a
+          # very wrong wall clock.  Do not ask chrony to sync a non-existent RTC.
+          CHRONY_CONF="$ROOTFS/etc/chrony/chrony.conf"
+          test -f "$CHRONY_CONF"
+          grep -Eq '^[[:space:]]*makestep[[:space:]]+1([.]0)?[[:space:]]+3([[:space:]]|$)' "$CHRONY_CONF"
+          sudo sed -i -E \
+            's/^[[:space:]]*rtcsync[[:space:]]*$/# rtcsync disabled: HG-680-KA has no usable battery-backed RTC/' \
+            "$CHRONY_CONF"
+          test -x "$ROOTFS/sbin/fake-hwclock"
+          test -f "$ROOTFS/lib/systemd/system/fake-hwclock.service"
 
           echo 'hg680ka' | sudo tee "$ROOTFS/etc/hostname" >/dev/null
           sudo tee "$ROOTFS/etc/hosts" >/dev/null <<'EOF'
@@ -204,6 +228,11 @@ jobs:
           sudo systemctl --root="$ROOTFS" enable systemd-networkd.service
           sudo systemctl --root="$ROOTFS" enable ssh.service
           sudo systemctl --root="$ROOTFS" enable serial-getty@ttyAMA0.service
+          sudo systemctl --root="$ROOTFS" enable chrony.service
+          # fake-hwclock 0.12 may already be enabled by its package maintainer
+          # scripts; enabling it here makes the image intent explicit.  Keep the
+          # build compatible if that unit is reported as static by systemd.
+          sudo systemctl --root="$ROOTFS" enable fake-hwclock.service || true
           sudo systemctl --root="$ROOTFS" mask systemd-networkd-wait-online.service || true
 
           if [ -f "$ROOTFS/lib/systemd/system/systemd-resolved.service" ]; then
@@ -258,6 +287,55 @@ jobs:
             test -n "$PHASE_A_MODULE"
             echo "Phase A SDIO helper installed: $PHASE_A_MODULE"
           fi
+
+      - name: Build and install MT7668 Wi-Fi and Bluetooth modules
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          WIFI_OUT="$BUILD_DIR/mt7668-wifi"
+          BT_OUT="$BUILD_DIR/mt7668-bluetooth"
+          MODULE_DIR="$ROOTFS/lib/modules/$KERNEL_RELEASE/extra/hg680ka"
+
+          rm -rf "$WIFI_OUT" "$BT_OUT"
+
+          bash scripts/hg680ka/build-mt7668-wifi.sh \
+            "$KERNEL_OUT" \
+            "$WIFI_OUT"
+
+          bash scripts/hg680ka/build-mt7668-bluetooth.sh \
+            "$KERNEL_OUT" \
+            "$BT_OUT"
+
+          test -f "$WIFI_OUT/wlan_mt7668_sdio.ko"
+          test -f "$BT_OUT/btmtksdio.ko"
+
+          sudo mkdir -p "$MODULE_DIR"
+          sudo install -m 0644 \
+            "$WIFI_OUT/wlan_mt7668_sdio.ko" \
+            "$MODULE_DIR/wlan_mt7668_sdio.ko"
+          sudo install -m 0644 \
+            "$BT_OUT/btmtksdio.ko" \
+            "$MODULE_DIR/btmtksdio.ko"
+
+          sudo depmod -b "$ROOTFS" "$KERNEL_RELEASE"
+
+          grep -F 'sdio:c*v037Ad7608*' \
+            < <(modinfo "$MODULE_DIR/wlan_mt7668_sdio.ko")
+          grep -F 'sdio:c*v037Ad7668*' \
+            < <(modinfo "$MODULE_DIR/btmtksdio.ko")
+          modinfo -F vermagic "$MODULE_DIR/wlan_mt7668_sdio.ko" \
+            | grep -F "$KERNEL_RELEASE"
+          modinfo -F vermagic "$MODULE_DIR/btmtksdio.ko" \
+            | grep -F "$KERNEL_RELEASE"
+
+          grep -F 'extra/hg680ka/wlan_mt7668_sdio.ko' \
+            "$ROOTFS/lib/modules/$KERNEL_RELEASE/modules.dep"
+          grep -F 'extra/hg680ka/btmtksdio.ko' \
+            "$ROOTFS/lib/modules/$KERNEL_RELEASE/modules.dep"
+
+          echo "Bundled HG-680-KA MT7668 modules:"
+          ls -lh "$MODULE_DIR/wlan_mt7668_sdio.ko" "$MODULE_DIR/btmtksdio.ko"
 
       - name: Stage kernel and package rootfs
         shell: bash
@@ -346,8 +424,19 @@ jobs:
             bootm 0x01FFBFC0
 
           Kernel modules are already installed under /lib/modules/<kernel-release>/.
+          The validated MT7668 Wi-Fi and Bluetooth SDIO modules are bundled under
+          /lib/modules/<kernel-release>/extra/hg680ka/ and indexed by depmod.
+
           For Wi-Fi Phase A, load the board helper with:
             modprobe hi_sdio_detect
+
+          This board is treated as having no usable battery-backed RTC.  The image
+          includes fake-hwclock for an approximate early-boot time and chrony for
+          NTP synchronization once networking is available.
+
+          MT7668 firmware is not redistributed in this image.  Install the
+          board's stock firmware in /lib/firmware before loading the Wi-Fi or
+          Bluetooth driver.
           EOF
 
           sync
@@ -424,6 +513,11 @@ jobs:
 
           Kernel release: $KERNEL_RELEASE
           Kernel modules are already installed in the root filesystem.
+          MT7668 Wi-Fi and Bluetooth modules are bundled under
+          /lib/modules/$KERNEL_RELEASE/extra/hg680ka/.
+          Timekeeping assumes no usable battery-backed RTC: fake-hwclock handles
+          early boot and chrony synchronizes from NTP after networking comes up.
+          Stock MT7668 firmware is intentionally not redistributed.
           EOF
 
           sha256sum \
