@@ -128,13 +128,18 @@ jobs:
           set -euo pipefail
           export SHELL=/bin/bash
 
-          KERNEL_OUT="$(dirname "$(find out -type f -path '*/obj/source/kernel/linux-4.4.y/.config' -print -quit)")"
+          KERNEL_OUT="$(dirname "$(find "$GITHUB_WORKSPACE/out" -type f -path '*/obj/source/kernel/linux-4.4.y/.config' -print -quit)")"
+          KERNEL_OUT="$(realpath "$KERNEL_OUT")"
+          KERNEL_SRC="$GITHUB_WORKSPACE/source/kernel/linux-4.4.y"
           KERNEL_RELEASE="$(cat "$KERNEL_OUT/include/config/kernel.release")"
-          STAGE="$PWD/artifacts/module-root"
+          STAGE="$GITHUB_WORKSPACE/artifacts/module-root"
+
+          test -f "$KERNEL_OUT/.config"
+          test -f "$KERNEL_OUT/Module.symvers"
 
           source ./env.sh
 
-          make -C source/kernel/linux-4.4.y \
+          make -C "$KERNEL_SRC" \
             O="$KERNEL_OUT" \
             ARCH=arm \
             CROSS_COMPILE=arm-histbv320-linux- \
