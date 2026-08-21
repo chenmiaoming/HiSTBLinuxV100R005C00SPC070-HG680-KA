@@ -1,0 +1,194 @@
+name: Build HG-680-KA HDMI console Phase A
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/hdmi-console-4.4
+    paths:
+      - '.github/workflows/build-hdmi-console-phase-a.yml'
+      - 'env.sh'
+      - 'base.mak'
+      - 'cfg.mak'
+      - 'configs/hi3798mv310/**'
+      - 'source/kernel/**'
+      - 'source/common/drv/**'
+      - 'source/msp/drv/pq/**'
+      - 'source/msp/drv/hdmi/**'
+      - 'source/msp/drv/vo/**'
+      - 'source/msp/drv/tde/**'
+      - 'source/msp/drv/hifb/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-hdmi-console-phase-a.yml'
+      - 'env.sh'
+      - 'base.mak'
+      - 'cfg.mak'
+      - 'configs/hi3798mv310/**'
+      - 'source/kernel/**'
+      - 'source/common/drv/**'
+      - 'source/msp/drv/pq/**'
+      - 'source/msp/drv/hdmi/**'
+      - 'source/msp/drv/vo/**'
+      - 'source/msp/drv/tde/**'
+      - 'source/msp/drv/hifb/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hdmi-console-phase-a-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-display-stack:
+    name: Vendor 4.4 display modules / ARMv7
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout HG-680-KA SDK
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            binutils \
+            bison \
+            flex \
+            kmod \
+            libncurses-dev \
+            libssl-dev
+
+      - name: Build vendor Linux 4.4 and MSP display modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SHELL=/bin/bash
+
+          cp configs/hi3798mv310/HG-680-KA_cfg.mak cfg.mak
+          source ./env.sh
+
+          echo 'Board profile: HG-680-KA'
+          arm-histbv320-linux-gcc --version | head -n 1
+          make linux -j"$(nproc)"
+
+      - name: Verify framebuffer console configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KCONFIG="$(find out -type f -path '*/obj/source/kernel/linux-4.4.y/.config' -print -quit)"
+          test -n "$KCONFIG"
+
+          grep -Fx 'CONFIG_FB=y' "$KCONFIG"
+          grep -Fx 'CONFIG_FRAMEBUFFER_CONSOLE=y' "$KCONFIG"
+          grep -Fx 'CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y' "$KCONFIG"
+
+      - name: Verify vendor HDMI display modules
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KERNEL_OUT="$(dirname "$(find out -type f -path '*/obj/source/kernel/linux-4.4.y/.config' -print -quit)")"
+          test -d "$KERNEL_OUT"
+
+          mkdir -p artifacts/display-modules
+          : > artifacts/module-report.txt
+
+          for module in hi_pq hi_hdmi hi_vou hi_tde hi_fb; do
+            path="$(find "$KERNEL_OUT/drivers/msp" -type f -name "${module}.ko" -print -quit)"
+            if [ -z "$path" ]; then
+              echo "Missing expected display module: ${module}.ko" >&2
+              exit 1
+            fi
+
+            cp "$path" artifacts/display-modules/
+            {
+              echo "===== ${module}.ko ====="
+              file "$path"
+              modinfo "$path" || true
+              echo
+            } >> artifacts/module-report.txt
+          done
+
+          echo 'Display modules:'
+          ls -lh artifacts/display-modules
+          cat artifacts/module-report.txt
+
+      - name: Audit module dependency graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SHELL=/bin/bash
+
+          KERNEL_OUT="$(dirname "$(find "$GITHUB_WORKSPACE/out" -type f -path '*/obj/source/kernel/linux-4.4.y/.config' -print -quit)")"
+          KERNEL_OUT="$(realpath "$KERNEL_OUT")"
+          KERNEL_SRC="$GITHUB_WORKSPACE/source/kernel/linux-4.4.y"
+          KERNEL_RELEASE="$(cat "$KERNEL_OUT/include/config/kernel.release")"
+          STAGE="$GITHUB_WORKSPACE/artifacts/module-root"
+
+          test -f "$KERNEL_OUT/.config"
+          test -f "$KERNEL_OUT/Module.symvers"
+
+          source ./env.sh
+
+          make -C "$KERNEL_SRC" \
+            O="$KERNEL_OUT" \
+            ARCH=arm \
+            CROSS_COMPILE=arm-histbv320-linux- \
+            INSTALL_MOD_PATH="$STAGE" \
+            modules_install
+
+          depmod -b "$STAGE" "$KERNEL_RELEASE"
+
+          {
+            echo "kernel_release=$KERNEL_RELEASE"
+            echo
+            echo '===== modules.dep display entries ====='
+            grep -E '/(hi_pq|hi_hdmi|hi_vou|hi_tde|hi_fb)\.ko:' \
+              "$STAGE/lib/modules/$KERNEL_RELEASE/modules.dep" || true
+            echo
+            for module in hi_pq hi_hdmi hi_vou hi_tde hi_fb; do
+              echo "===== modprobe --show-depends $module ====="
+              modprobe --show-depends \
+                -d "$STAGE" \
+                -S "$KERNEL_RELEASE" \
+                "$module" || true
+              echo
+            done
+          } > artifacts/dependency-report.txt
+
+          cat artifacts/dependency-report.txt
+
+      - name: Create checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd artifacts
+            find display-modules -type f -name '*.ko' -print0 \
+              | sort -z \
+              | xargs -0 sha256sum
+            sha256sum module-report.txt dependency-report.txt
+          ) > artifacts/SHA256SUMS
+          cat artifacts/SHA256SUMS
+
+      - name: Upload HDMI console Phase A audit
+        uses: actions/upload-artifact@v7
+        with:
+          name: HG-680-KA-HDMI-console-Phase-A-${{ github.sha }}
+          path: |
+            artifacts/display-modules/
+            artifacts/module-report.txt
+            artifacts/dependency-report.txt
+            artifacts/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
