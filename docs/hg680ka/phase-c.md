@@ -9,7 +9,7 @@ The board exposes one SDIO card with two functions:
 - function 1: `037A:7608` -- Wi-Fi, already handled by Phase B
 - function 2: `037A:7668` -- Bluetooth
 
-The current HiSTBLinux 4.4 kernel enumerates function 2 but leaves it unbound.
+The HiSTBLinux 4.4 kernel enumerates function 2 and Phase C supplies the MediaTek-specific driver needed to bind it.
 
 ## Stock Android evidence
 
@@ -25,12 +25,12 @@ Read-only inspection of the HG-680-KA stock Android system found:
 - stock `wifi.cfg` contains `EfuseBufferModeCal 0`; Phase C records this value but does not assume its semantics without matching source
 - stock init logic identifies `037A:7668` as `MT7668BS`
 
-The stock firmware files observed on this board are:
+The stock firmware files observed on this board include:
 
 | File | Size | SHA-256 |
 | --- | ---: | --- |
-| `mt7668_patch_e1_hdr.bin` | about 149 KiB | `519083ebb8318d9cfc8eaaaa7470d1a266c8f32275df3c62e3619d6c07f97389` |
-| `mt7668_patch_e2_hdr.bin` | about 170 KiB | `8a6591d85255a04dcdcddfa79e9d2a0fa9a961016ac3ca6b3dfb3fe716a20330` |
+| `mt7668_patch_e1_hdr.bin` | 152302 bytes | `519083ebb8318d9cfc8eaaaa7470d1a266c8f32275df3c62e3619d6c07f97389` |
+| `mt7668_patch_e2_hdr.bin` | 174046 bytes | `8a6591d85255a04dcdcddfa79e9d2a0fa9a961016ac3ca6b3dfb3fe716a20330` |
 | `EEPROM_MT7668.bin` | 1024 bytes | `a50c8c95ff37eb3e1d69f26f9b7ccd1c34d95b83ddc89abb835d1157484a4042` |
 | `wifi.cfg` | 846 bytes | `1d48bb445da63a27e47db1af3daf1f32c1967354be8b394e8220beac041e20b3` |
 
@@ -77,7 +77,7 @@ This source family is a strong match for the HG-680-KA stock binary:
 - firmware names `mt7668_patch_e1_hdr.bin` and `mt7668_patch_e2_hdr.bin`
 - EEPROM configuration support using `EEPROM_MT7668.bin`
 
-The published history also contains explicit Linux 4.4 compatibility work and HCI-device registration support, so Phase C starts with an out-of-tree build against the HG-680-KA 4.4.35 kernel rather than trying to insert the stock Android 3.18 binary.
+The published history also contains explicit Linux 4.4 compatibility work and HCI-device registration support, so Phase C uses an out-of-tree build against the HG-680-KA 4.4.35 kernel rather than trying to insert the stock Android 3.18 binary.
 
 ## Current target-kernel state
 
@@ -95,18 +95,21 @@ CONFIG_PM=y
 CONFIG_PM_SLEEP=y
 ```
 
-The generic `btsdio` driver does not bind `mmc2:0001:2`; the MediaTek-specific function therefore remains available for the Phase C driver.
+The generic `btsdio` driver does not bind `mmc2:0001:2`; the MediaTek-specific function is therefore available for the Phase C driver.
 
-## Firmware policy
+## Firmware package
 
-Proprietary board firmware is not committed to this public repository or uploaded by CI.
+The selected HG-680-KA factory MT7668 firmware is now kept under `firmware/hg680ka/mt7668/` together with byte-for-byte SHA-256 values. The bundle includes both Bluetooth patch revisions, the stock EEPROM images, Wi-Fi RAM code, `wifi.cfg`, and `woble_setting.bin`; unrelated Realtek blobs from the same factory archive are excluded.
 
-For hardware testing, extract the firmware from the board's original Android `/system/etc/firmware` partition and place the required files in the Linux firmware search path. At minimum the driver is expected to request one of:
+For a rootfs staging directory, use:
 
-- `mt7668_patch_e1_hdr.bin`
-- `mt7668_patch_e2_hdr.bin`
+```sh
+bash scripts/hg680ka/install-mt7668-stock-firmware.sh <rootfs>/lib/firmware
+```
 
-The source can also consume `EEPROM_MT7668.bin` depending on its EEPROM-access configuration. Preserve the board's original EEPROM data; never replace it with firmware from another board.
+The helper reconstructs the checked-in archive, verifies all selected files, and installs only the expected file set. The system-image CI uses the same helper so the generated Ubuntu image is self-contained for MT7668 driver loading.
+
+Preserve the board's original EEPROM/calibration data. These files are consumed through the Linux firmware path only; never use factory/test commands to write MT7668 eFuse/OTP.
 
 ## Build
 
@@ -134,9 +137,9 @@ Required metadata checks include:
 
 ## Hardware validation order
 
-1. Verify `mmc2:0001:2` is still `037A:7668` and unbound.
+1. Verify `mmc2:0001:2` is still `037A:7668`.
 2. Ensure `hi_sdio_detect` has already powered/enumerated the combo device; no additional rfkill module is assumed for the MT7668-specific path.
-3. Copy only the required stock firmware into `/lib/firmware` on the temporary USB Linux rootfs.
+3. Verify the checked-in stock firmware is present under `/lib/firmware`.
 4. Load the Phase C module.
 5. Verify function 2 binds to the MediaTek Bluetooth SDIO driver.
 6. Verify firmware/ROM patch download succeeds.
@@ -144,10 +147,10 @@ Required metadata checks include:
 8. Read controller information with BlueZ tools.
 9. Test BR/EDR inquiry.
 10. Test BLE scan.
-11. Exercise unload/reload and repeated scans before considering persistent integration.
+11. Exercise unload/reload and repeated scans before considering persistent integration complete.
 
 ## Safety
 
 Phase C does not require writes to eMMC boot areas, RPMB, OTP/eFuse, or bootloader environment.
 
-The original Android partitions should remain mounted read-only during archaeology. Do not use factory/test commands that write MT7668 eFuse or board calibration data.
+The original Android partitions should remain read-only during archaeology. Do not use factory/test commands that write MT7668 eFuse or board calibration data.
