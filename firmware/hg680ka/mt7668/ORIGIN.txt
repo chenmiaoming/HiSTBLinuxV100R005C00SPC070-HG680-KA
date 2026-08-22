@@ -1,0 +1,8 @@
+HG-680-KA MT7668 firmware provenance
+
+Source: original FiberHome HG-680-KA factory firmware archive supplied for this board during bring-up.
+Hardware match: MediaTek MT7668 SDIO combo, Wi-Fi 037A:7608, Bluetooth 037A:7668.
+
+Only MT7668-related files were retained. Realtek rtl8723*, rtl8761*, and rtl8822* payloads from the same archive were excluded.
+
+Byte-for-byte hashes of all retained files are in SHA256SUMS.

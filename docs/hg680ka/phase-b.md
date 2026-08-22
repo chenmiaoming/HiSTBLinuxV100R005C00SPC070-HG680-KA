@@ -23,9 +23,9 @@ Phase B therefore uses the SPC060 driver pinned at:
 
 The driver is built out-of-tree against the HG-680-KA Linux 4.4.35 kernel. This keeps the port isolated from the main BSP while preserving a reproducible build path.
 
-## Stock firmware policy
+## Stock firmware package
 
-The original HG-680-KA Android system contains the following MT7668 files:
+The original HG-680-KA Android system contains the following MT7668 files used by the Wi-Fi/Bluetooth stack:
 
 - `EEPROM_MT7668.bin`
 - `EEPROM_MT7668_DMG.bin`
@@ -35,10 +35,13 @@ The original HG-680-KA Android system contains the following MT7668 files:
 - `mt7668_patch_e1_hdr.bin`
 - `mt7668_patch_e2_hdr.bin`
 - `wifi.cfg`
+- `woble_setting.bin`
 
-These binaries are not committed or redistributed by Phase B. Hardware tests use the board's own stock files extracted read-only from the original Android `/system` partition.
+The project now keeps this selected HG-680-KA factory payload under `firmware/hg680ka/mt7668/`. Unrelated Realtek firmware from the same factory archive is excluded. Exact SHA-256 values are recorded in `firmware/hg680ka/mt7668/SHA256SUMS`.
 
-The stock `wifi.cfg` is retained rather than substituting a generic tuning file, because calibration and board power settings are device-specific.
+`scripts/hg680ka/install-mt7668-stock-firmware.sh` reconstructs the stored archive, verifies each file and installs it into a requested firmware directory. The system-image workflow uses this helper to populate `/lib/firmware` in the generated Ubuntu rootfs.
+
+The stock `wifi.cfg` is retained rather than substituting a generic tuning file, because calibration and board power settings are device-specific. EEPROM/calibration files are consumed as firmware data only; this project does not write MT7668 eFuse/OTP.
 
 ## Hardware validation
 
@@ -64,7 +67,7 @@ For the 2.4 GHz validation on channel 6, target power was typically 18 dBm for D
 
 The driver attempts to load `TxPwrLimit_MT76x8.dat`, and the Linux firmware loader reports `-ENOENT` when it is absent. The original HG-680-KA Android `/system` and `/data` partitions do not contain this file, and the stock Android WLAN module contains the same filename/path lookup strings.
 
-The runtime power query shows that the missing external table leaves the regulatory-limit column at the driver's `31.5 dBm` maximum representation, but the actual target power remains constrained by the board/firmware calibration table. Phase B therefore does not invent or redistribute a replacement `TxPwrLimit_MT76x8.dat`.
+The runtime power query shows that the missing external table leaves the regulatory-limit column at the driver's `31.5 dBm` maximum representation, but the actual target power remains constrained by the board/firmware calibration table. Phase B therefore does not invent or bundle a replacement `TxPwrLimit_MT76x8.dat`.
 
 ## Known limitations / deferred work
 
