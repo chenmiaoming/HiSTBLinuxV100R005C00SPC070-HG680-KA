@@ -6,27 +6,82 @@ The primary, hardware-tested path today is **vendor Linux 4.4.35 + ARMHF + Ubunt
 
 > This is not a generic SPC070 reference-board configuration. Use the `HG-680-KA` board profile for this hardware.
 
-## HG-680-KA hardware
+## HG-680-KA hardware fingerprint
 
-| Component | HG-680-KA configuration | Current project status |
+The table below describes the physical unit used for development and validation in this repository. HG-680-KA units from another operator, production batch, or PCB revision should be compared against these details before assuming that the same DTS, DDR setup, eMMC layout, or wireless wiring applies.
+
+| Item | Observed on the reference HG-680-KA | Status / alignment note |
 | --- | --- | --- |
-| SoC | HiSilicon `Hi3798MRBCV311`, handled by the Hi3798MV310-family BSP | working on vendor 4.4 |
-| CPU | 4 × ARM Cortex-A53 | working; current vendor-kernel build is ARMv7/ARMHF |
-| Memory | 1 GiB DDR3 | working |
-| Internal flash | Samsung 8 GiB eMMC | detected; destructive eMMC installation is intentionally not part of bring-up |
-| Ethernet | integrated HiSilicon Fast Ethernet MAC/PHY path | working, observed 100 Mbit/s full duplex |
-| Wi-Fi / Bluetooth | MediaTek MT7668 SDIO combo module, 2 × 2 802.11ac + Bluetooth | Wi-Fi and Bluetooth driver work completed on vendor 4.4 path |
+| Manufacturer / model | FiberHome / 烽火 `HG680-KA` | primary target board |
+| Stock Android product model | `HG680-KA` | observed in stock Android properties |
+| Stock Android hardware ID | `HG680-AYRRT-0B` | useful for comparing operator/board variants |
+| SoC package marking | HiSilicon `Hi3798MRBCV311` | handled by the Hi3798MV310-family BSP |
+| CPU | 4 × ARM Cortex-A53 | vendor BSP currently boots these CPUs through the 32-bit ARM/ARMHF path |
+| RAM | 1 GiB DDR3 | working |
+| Stock DDR configuration | `hi3798m31dmd_hi3798mv310_DDR3-1866_1GB_16bitx2_4layers.reg` | this differs from the SPC070 MV310 reference-board DDR topology; do not replace the stock DDR/Fastboot image with the generic SDK output |
+| Internal flash | Samsung 8 GB eMMC; observed model string `8GTF4R` | user area is approximately 7456 MiB |
+| eMMC interface | MMC 5.1-class device; stock configuration supports 8-bit, 1.8 V, HS400 up to 100 MHz | eMMC is readable on the vendor 4.4 path; destructive repartitioning is deliberately avoided |
+| Bootloader | HiSilicon/HiSTB Fastboot `3.3.0` | U-Boot-derived shell; this is not Android USB fastboot |
+| Stock SDK | `HiSTBAndroidV600R003C01SPC031_patch5` | factory software reference |
+| Stock kernel | `3.18.24_hi3798mv310` | stock Android kernel/modules are reference material only and must not be loaded into the 4.4.35 kernel |
+| Current project kernel | `4.4.35-HG680-KA` | Linux 4.4 vendor BSP, ARMv7/ARMHF |
+| Current userspace | Ubuntu 22.04 LTS ARMHF | known-good USB-root development system |
+| Ethernet | integrated HiSilicon Fast Ethernet path | working; observed 100 Mbit/s full duplex |
+| Wi-Fi / Bluetooth | MediaTek MT7668 SDIO combo module, 2 × 2 802.11ac + Bluetooth | validated on this unit; do not assume the Realtek/Fn-Link wiring found in generic SPC070 DTS files |
 | Wi-Fi SDIO function | `037A:7608` | hardware validated |
-| Bluetooth SDIO function | `037A:7668` | driver/firmware bring-up completed in Phase C work |
-| SDIO operating point | 3.3 V, 4-bit, 50 MHz, SD High Speed | validated; 1.8 V/UHS is deliberately deferred |
-| USB | HiSilicon USB host | working; used for kernel loading and USB-root development image |
-| UART | `ttyAMA0`, 115200 baud | working and used as primary recovery/debug console |
-| HDMI | HiSilicon vendor HDMI/VO/PQ/TDE/HIFB stack | modules compile and dependency audit passes; runtime HDMI/fbcon bring-up is deferred for now |
+| Bluetooth SDIO function | `037A:7668` | hardware validated |
+| MT7668 SDIO operating point | 3.3 V, 4-bit, 50 MHz, SD High Speed | deliberately avoids UHS/CMD11 during the stable 4.4 bring-up |
+| MT7668 Linux interfaces | `wlan0`, `p2p0`, `ap0` observed during bring-up | Wi-Fi Phase B completed |
+| UART | `ttyAMA0`, 115200 baud | primary boot/recovery/debug console |
+| USB | HiSilicon USB host + USB mass storage | working; used for non-destructive kernel/rootfs boot |
+| TF / microSD | physical slot present | not required by the current USB-root workflow |
+| HDMI | vendor HDMI/VO/PQ/TDE/HIFB stack | modules compile and dependency audit passes; runtime HDMI/fbcon bring-up is deferred for now |
 | GPU | vendor configuration contains Mali-450 support | deferred together with the display path |
-| RTC | no usable battery-backed RTC assumed | Ubuntu image uses `fake-hwclock` + `chrony` |
-| TF/microSD | board slot present | not a dependency of the current USB-root workflow |
+| RTC | no usable battery-backed RTC assumed by the project | Ubuntu image uses `fake-hwclock` + `chrony` |
 
-Hardware status above distinguishes what has been exercised on the board from compile-only/deferred work. Do not treat the HDMI/Mali entries as completed merely because their vendor modules build.
+The stock DDR configuration is particularly important when comparing boards. The HG-680-KA unit above uses a `1GB_16bitx2_4layers` DDR configuration, while the generic SPC070 MV310 SDK contains a different reference-board DDR topology. The project therefore keeps the factory bootloader/DDR initialization intact and limits normal development to kernel, DT, drivers and userspace.
+
+## Observed eMMC and stock Android layout
+
+The following information was obtained from the development unit by read-only inspection of the original Android installation. It is intentionally recorded as **raw byte-range evidence**, not as a complete GPT/MBR partition map.
+
+| Region | Raw start | Known size / end | Filesystem | Verification status |
+| --- | ---: | ---: | --- | --- |
+| Fastboot environment | `0x00400000` | `0x00010000` bytes | raw environment | location recorded from the stock boot setup; never modified by this project |
+| Android `system` | 776 MiB | 1024 MiB; ends at about 1800 MiB | ext4 | mounted read-only under Linux and inspected successfully |
+| Unknown / not yet mapped area | about 1800 MiB | about 658 MiB, up to the observed `userdata` start at 2458 MiB | unknown | **do not overwrite or merge into another filesystem** |
+| Android `userdata` | 2458 MiB | exact end/size not yet recorded | ext4 | mounted read-only and inspected successfully |
+
+Important limitations of this table:
+
+- The stock Android command line has used `blkdevparts`, so Linux partition enumeration may be defined partly by the kernel command line rather than solely by an on-disk GPT/MBR.
+- The complete eMMC partition map has **not** yet been reconstructed and documented.
+- The exact raw stock-kernel offset/size is still not confirmed.
+- The exact `/dev/mmcblk0pX` node corresponding to stock `userdata` is still not recorded in the project documentation.
+- Nothing between the end of `system` and the start of `userdata` should be treated as free space merely because its contents have not yet been identified.
+- eMMC `boot0`, `boot1`, RPMB, bootloader/auxiliary code, DDR initialization, secure storage and OTP/eFuse areas are outside the normal Linux installation workflow and must not be overwritten.
+
+The original Android filesystems were examined using read-only loop/mount paths (`ro,noload` / `norecovery`) so that the factory installation remained intact. Before any future eMMC-root migration, capture and preserve at least:
+
+```sh
+cat /proc/cmdline
+lsblk -o NAME,SIZE,FSTYPE,LABEL,PARTLABEL,MOUNTPOINT
+blkid
+cat /proc/partitions
+```
+
+Do not infer a new whole-disk partition layout from the partial offsets above.
+
+### Generated USB development image
+
+This is separate from the stock eMMC layout. The current generated removable USB image uses:
+
+| Partition | Filesystem | Label | Purpose |
+| --- | --- | --- | --- |
+| p1 | FAT32 | `HGBOOT` | 256 MiB boot partition containing the kernel/boot files |
+| p2 | ext4 | `ubuntu-root` | Ubuntu 22.04 ARMHF root filesystem |
+
+Keeping the USB layout documented separately avoids confusing the project-generated image with the factory eMMC partitioning.
 
 ## Current software stack
 
@@ -56,6 +111,7 @@ The development workflow intentionally leaves the factory bootloader and eMMC bo
 | HDMI console Phase A | deferred | `hi_pq`, `hi_hdmi`, `hi_vou`, `hi_tde`, `hi_fb` compile and dependency audit completed; PR #6 closed without merge and runtime board validation is paused |
 | framebuffer console | deferred | paused together with HDMI/display bring-up |
 | Mali/EGL/GLES | deferred | no current display/GPU bring-up is planned |
+| Complete eMMC partition map | incomplete | `system` and `userdata` raw locations are known, but the full stock map and exact `userdata` block-device mapping still need read-only capture |
 | Linux 6.18 ARM64 | planned | future official Linux 6.18.y + board patch series + TF-A/PSCI work; not a vendor 4.4 in-place upgrade |
 
 More detailed Wi-Fi/Bluetooth notes are under `docs/hg680ka/`.
@@ -112,7 +168,7 @@ woble_setting.bin
 
 The `rtl8723*`, `rtl8761*` and `rtl8822*` files from the same factory package are not included because they do not correspond to this board's `037A:7608` / `037A:7668` SDIO device.
 
-Firmware provenance, exact hashes and the reconstruction format are documented in `firmware/hg680ka/mt7668/README.md`. The installer performs SHA-256 verification before files are copied to a root filesystem.
+Firmware provenance, exact hashes and the archive format are documented in `firmware/hg680ka/mt7668/README.md`. The installer performs archive-level and per-file SHA-256 verification before files are copied to a root filesystem.
 
 ## Driver and patch provenance
 
