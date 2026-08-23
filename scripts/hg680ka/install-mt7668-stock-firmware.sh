@@ -12,8 +12,7 @@ OUT_DIR="$(realpath -m "$1")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FW_DIR="$REPO_ROOT/firmware/hg680ka/mt7668"
-ARCHIVE_DIR="$FW_DIR/archive"
-RAW_ARCHIVE="$ARCHIVE_DIR/mt7668-stock-firmware.tar.xz"
+ARCHIVE="$FW_DIR/archive/mt7668-stock-firmware.tar.xz"
 SUMS="$FW_DIR/SHA256SUMS"
 
 EXPECTED_ARCHIVE_SIZE=595036
@@ -38,34 +37,10 @@ command -v install >/dev/null
 command -v stat >/dev/null
 
 test -f "$SUMS"
-
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
-ARCHIVE="$TMP/mt7668-stock-firmware.tar.xz"
-EXTRACT="$TMP/extract"
-mkdir -p "$EXTRACT"
-
-if [ -f "$RAW_ARCHIVE" ]; then
-    # Preferred representation: keep the small (~581 KiB) verified archive directly
-    # in Git. This avoids fragile Base64 reconstruction and does not require Git LFS.
-    cp "$RAW_ARCHIVE" "$ARCHIVE"
-else
-    # Compatibility path for the older split-Base64 representation. This can be
-    # removed after the raw archive has landed and the old parts are deleted.
-    shopt -s nullglob
-    PARTS=("$ARCHIVE_DIR"/mt7668-stock-firmware.tar.xz.b64.part*)
-    shopt -u nullglob
-
-    [ "${#PARTS[@]}" -gt 0 ] || {
-        echo "Missing MT7668 archive: $RAW_ARCHIVE" >&2
-        echo "No legacy Base64 archive parts found in $ARCHIVE_DIR either" >&2
-        exit 1
-    }
-
-    command -v base64 >/dev/null
-    # Parts are zero-padded and shell glob order is therefore archive order.
-    cat "${PARTS[@]}" | base64 --decode > "$ARCHIVE"
-fi
+test -f "$ARCHIVE" || {
+    echo "Missing MT7668 archive: $ARCHIVE" >&2
+    exit 1
+}
 
 ACTUAL_ARCHIVE_SIZE="$(stat -c %s "$ARCHIVE")"
 if [ "$ACTUAL_ARCHIVE_SIZE" -ne "$EXPECTED_ARCHIVE_SIZE" ]; then
@@ -79,6 +54,10 @@ printf '%s  %s\n' "$EXPECTED_ARCHIVE_SHA256" "$ARCHIVE" | sha256sum -c -
 xz -t "$ARCHIVE"
 tar -tJf "$ARCHIVE" >/dev/null
 
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+EXTRACT="$TMP/extract"
+mkdir -p "$EXTRACT"
 tar -xJf "$ARCHIVE" -C "$EXTRACT"
 
 # Reject path surprises and unexpected regular files before installing anything.

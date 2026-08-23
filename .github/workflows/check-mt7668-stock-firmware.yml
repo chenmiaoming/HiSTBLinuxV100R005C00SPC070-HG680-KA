@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   verify:
-    name: reconstruct and verify selected MT7668 payload
+    name: verify selected MT7668 payload
     runs-on: ubuntu-22.04
     timeout-minutes: 10
 
@@ -30,7 +30,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Reconstruct and verify firmware
+      - name: Verify firmware archive
         shell: bash
         run: |
           set -euo pipefail
