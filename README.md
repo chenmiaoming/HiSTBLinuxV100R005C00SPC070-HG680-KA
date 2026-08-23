@@ -21,8 +21,8 @@ The primary, hardware-tested path today is **vendor Linux 4.4.35 + ARMHF + Ubunt
 | SDIO operating point | 3.3 V, 4-bit, 50 MHz, SD High Speed | validated; 1.8 V/UHS is deliberately deferred |
 | USB | HiSilicon USB host | working; used for kernel loading and USB-root development image |
 | UART | `ttyAMA0`, 115200 baud | working and used as primary recovery/debug console |
-| HDMI | HiSilicon vendor HDMI/VO/PQ/TDE/HIFB stack | modules compile and dependency audit passes; board runtime/display validation is in progress |
-| GPU | vendor configuration contains Mali-450 support | deferred until framebuffer/HDMI path is stable |
+| HDMI | HiSilicon vendor HDMI/VO/PQ/TDE/HIFB stack | modules compile and dependency audit passes; runtime HDMI/fbcon bring-up is deferred for now |
+| GPU | vendor configuration contains Mali-450 support | deferred together with the display path |
 | RTC | no usable battery-backed RTC assumed | Ubuntu image uses `fake-hwclock` + `chrony` |
 | TF/microSD | board slot present | not a dependency of the current USB-root workflow |
 
@@ -53,9 +53,9 @@ The development workflow intentionally leaves the factory bootloader and eMMC bo
 | MT7668 Bluetooth Phase C | done/integration | Linux-4.4-compatible MediaTek SDIO driver and stock patch/EEPROM path integrated |
 | Wi-Fi/BT kernel-module packaging | done | modules installed under `/lib/modules/4.4.35-HG680-KA/extra/hg680ka/` and indexed by `depmod` |
 | MT7668 stock firmware packaging | done in this branch | selected factory payload is hash-checked and installed into generated rootfs |
-| HDMI console Phase A | build complete | `hi_pq`, `hi_hdmi`, `hi_vou`, `hi_tde`, `hi_fb` build; dependency graph audited; runtime board validation pending |
-| framebuffer console | in progress | depends on successful vendor display/HIFB runtime initialization |
-| Mali/EGL/GLES | deferred | deliberately kept out of first HDMI/fbcon bring-up |
+| HDMI console Phase A | deferred | `hi_pq`, `hi_hdmi`, `hi_vou`, `hi_tde`, `hi_fb` compile and dependency audit completed; PR #6 closed without merge and runtime board validation is paused |
+| framebuffer console | deferred | paused together with HDMI/display bring-up |
+| Mali/EGL/GLES | deferred | no current display/GPU bring-up is planned |
 | Linux 6.18 ARM64 | planned | future official Linux 6.18.y + board patch series + TF-A/PSCI work; not a vendor 4.4 in-place upgrade |
 
 More detailed Wi-Fi/Bluetooth notes are under `docs/hg680ka/`.
@@ -147,7 +147,7 @@ That revision is intentionally pinned before Coral commit `dbf041d`, which intro
 
 ### HDMI / framebuffer / video output
 
-The current HDMI path uses the existing HiSilicon SPC070 vendor MSP implementation in this repository: PQ, HDMI, VO, TDE and HIFB. The immediate target is a reliable framebuffer/fbcon path before adding Mali/EGL. No claim is made that this proprietary MSP stack is equivalent to an upstream DRM/KMS driver.
+The vendor HDMI path remains available in the SPC070 MSP implementation (PQ, HDMI, VO, TDE and HIFB). A Phase A branch verified that these modules compile and that their dependency graph can be audited, but runtime HDMI/fbcon bring-up is deferred for now. PR #6 was closed without merge; the vendor display stack is retained as a reference and can be revisited later if display output becomes a priority. No claim is made that this proprietary MSP stack is equivalent to an upstream DRM/KMS driver.
 
 ### Future Linux 6.18 ARM64 work
 
