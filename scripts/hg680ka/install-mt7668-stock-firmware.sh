@@ -13,7 +13,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FW_DIR="$REPO_ROOT/firmware/hg680ka/mt7668"
 ARCHIVE_DIR="$FW_DIR/archive"
+RAW_ARCHIVE="$ARCHIVE_DIR/mt7668-stock-firmware.tar.xz"
 SUMS="$FW_DIR/SHA256SUMS"
+
+EXPECTED_ARCHIVE_SIZE=595036
+EXPECTED_ARCHIVE_SHA256="36c59eab1c2bf37ad99bf8205fba45d15835858fb84e568c3c4a4344564e67f8"
 
 EXPECTED_FILES=(
     EEPROM_MT7668.bin
@@ -27,22 +31,13 @@ EXPECTED_FILES=(
     woble_setting.bin
 )
 
-command -v base64 >/dev/null
 command -v tar >/dev/null
 command -v xz >/dev/null
 command -v sha256sum >/dev/null
 command -v install >/dev/null
+command -v stat >/dev/null
 
 test -f "$SUMS"
-
-shopt -s nullglob
-PARTS=("$ARCHIVE_DIR"/mt7668-stock-firmware.tar.xz.b64.part*)
-shopt -u nullglob
-
-[ "${#PARTS[@]}" -gt 0 ] || {
-    echo "No MT7668 archive parts found in $ARCHIVE_DIR" >&2
-    exit 1
-}
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -50,9 +45,40 @@ ARCHIVE="$TMP/mt7668-stock-firmware.tar.xz"
 EXTRACT="$TMP/extract"
 mkdir -p "$EXTRACT"
 
-# Parts are zero-padded and shell glob order is therefore archive order.
-cat "${PARTS[@]}" | base64 --decode > "$ARCHIVE"
+if [ -f "$RAW_ARCHIVE" ]; then
+    # Preferred representation: keep the small (~581 KiB) verified archive directly
+    # in Git. This avoids fragile Base64 reconstruction and does not require Git LFS.
+    cp "$RAW_ARCHIVE" "$ARCHIVE"
+else
+    # Compatibility path for the older split-Base64 representation. This can be
+    # removed after the raw archive has landed and the old parts are deleted.
+    shopt -s nullglob
+    PARTS=("$ARCHIVE_DIR"/mt7668-stock-firmware.tar.xz.b64.part*)
+    shopt -u nullglob
+
+    [ "${#PARTS[@]}" -gt 0 ] || {
+        echo "Missing MT7668 archive: $RAW_ARCHIVE" >&2
+        echo "No legacy Base64 archive parts found in $ARCHIVE_DIR either" >&2
+        exit 1
+    }
+
+    command -v base64 >/dev/null
+    # Parts are zero-padded and shell glob order is therefore archive order.
+    cat "${PARTS[@]}" | base64 --decode > "$ARCHIVE"
+fi
+
+ACTUAL_ARCHIVE_SIZE="$(stat -c %s "$ARCHIVE")"
+if [ "$ACTUAL_ARCHIVE_SIZE" -ne "$EXPECTED_ARCHIVE_SIZE" ]; then
+    echo "MT7668 archive size mismatch: expected $EXPECTED_ARCHIVE_SIZE bytes, got $ACTUAL_ARCHIVE_SIZE" >&2
+    exit 1
+fi
+
+printf '%s  %s\n' "$EXPECTED_ARCHIVE_SHA256" "$ARCHIVE" | sha256sum -c -
+
+# Validate both compression and tar structure before extracting anything.
 xz -t "$ARCHIVE"
+tar -tJf "$ARCHIVE" >/dev/null
+
 tar -xJf "$ARCHIVE" -C "$EXTRACT"
 
 # Reject path surprises and unexpected regular files before installing anything.
