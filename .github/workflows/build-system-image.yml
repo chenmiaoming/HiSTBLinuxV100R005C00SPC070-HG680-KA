@@ -13,6 +13,8 @@ on:
       - '.github/workflows/build-system-image.yml'
       - 'scripts/hg680ka/build-mt7668-wifi.sh'
       - 'scripts/hg680ka/build-mt7668-bluetooth.sh'
+      - 'scripts/hg680ka/install-mt7668-stock-firmware.sh'
+      - 'firmware/hg680ka/mt7668/**'
 
 permissions:
   contents: read
@@ -58,6 +60,7 @@ jobs:
             e2fsprogs \
             rsync \
             zstd \
+            xz-utils \
             kmod
 
       - name: Prepare build directories
@@ -337,6 +340,22 @@ jobs:
           echo "Bundled HG-680-KA MT7668 modules:"
           ls -lh "$MODULE_DIR/wlan_mt7668_sdio.ko" "$MODULE_DIR/btmtksdio.ko"
 
+      - name: Install verified HG-680-KA MT7668 stock firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FW_STAGE="$BUILD_DIR/mt7668-stock-firmware"
+          rm -rf "$FW_STAGE"
+          bash scripts/hg680ka/install-mt7668-stock-firmware.sh "$FW_STAGE"
+
+          sudo install -d -m 0755 "$ROOTFS/lib/firmware"
+          sudo cp -a "$FW_STAGE/." "$ROOTFS/lib/firmware/"
+
+          sudo sh -c "cd '$ROOTFS/lib/firmware' && sha256sum -c '$GITHUB_WORKSPACE/firmware/hg680ka/mt7668/SHA256SUMS'"
+          echo "Bundled verified HG-680-KA MT7668 stock firmware:"
+          ls -lh "$FW_STAGE"
+
       - name: Stage kernel and package rootfs
         shell: bash
         run: |
@@ -434,9 +453,9 @@ jobs:
           includes fake-hwclock for an approximate early-boot time and chrony for
           NTP synchronization once networking is available.
 
-          MT7668 firmware is not redistributed in this image.  Install the
-          board's stock firmware in /lib/firmware before loading the Wi-Fi or
-          Bluetooth driver.
+          The selected HG-680-KA factory MT7668 firmware, EEPROM/calibration files,
+          Wi-Fi RAM code, Bluetooth patches, wifi.cfg, and WoBLE settings are
+          already installed under /lib/firmware and verified during image build.
           EOF
 
           sync
@@ -515,9 +534,10 @@ jobs:
           Kernel modules are already installed in the root filesystem.
           MT7668 Wi-Fi and Bluetooth modules are bundled under
           /lib/modules/$KERNEL_RELEASE/extra/hg680ka/.
+          The selected HG-680-KA factory MT7668 firmware is already installed
+          under /lib/firmware and is SHA-256 verified during image construction.
           Timekeeping assumes no usable battery-backed RTC: fake-hwclock handles
           early boot and chrony synchronizes from NTP after networking comes up.
-          Stock MT7668 firmware is intentionally not redistributed.
           EOF
 
           sha256sum \

@@ -1,0 +1,58 @@
+name: Check HG-680-KA MT7668 stock firmware
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'firmware/hg680ka/mt7668/**'
+      - 'scripts/hg680ka/install-mt7668-stock-firmware.sh'
+      - '.github/workflows/check-mt7668-stock-firmware.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'firmware/hg680ka/mt7668/**'
+      - 'scripts/hg680ka/install-mt7668-stock-firmware.sh'
+      - '.github/workflows/check-mt7668-stock-firmware.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify selected MT7668 payload
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify firmware archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/mt7668-firmware"
+          bash scripts/hg680ka/install-mt7668-stock-firmware.sh "$OUT"
+
+          EXPECTED=(
+            EEPROM_MT7668.bin
+            EEPROM_MT7668_DMG.bin
+            EEPROM_MT7668_e1.bin
+            WIFI_RAM_CODE2_SDIO_MT7668.bin
+            WIFI_RAM_CODE_MT7668.bin
+            mt7668_patch_e1_hdr.bin
+            mt7668_patch_e2_hdr.bin
+            wifi.cfg
+            woble_setting.bin
+          )
+
+          test "$(find "$OUT" -maxdepth 1 -type f | wc -l)" -eq "${#EXPECTED[@]}"
+          for file in "${EXPECTED[@]}"; do
+            test -s "$OUT/$file"
+          done
+
+          echo 'Verified HG-680-KA MT7668 firmware:'
+          (cd "$OUT" && sha256sum -c "$GITHUB_WORKSPACE/firmware/hg680ka/mt7668/SHA256SUMS")
