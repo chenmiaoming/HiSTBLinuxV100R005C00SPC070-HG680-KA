@@ -41,36 +41,44 @@ The table below describes the physical unit used for development and validation 
 
 The stock DDR configuration is particularly important when comparing boards. The HG-680-KA unit above uses a `1GB_16bitx2_4layers` DDR configuration, while the generic SPC070 MV310 SDK contains a different reference-board DDR topology. The project therefore keeps the factory bootloader/DDR initialization intact and limits normal development to kernel, DT, drivers and userspace.
 
-## Observed eMMC and stock Android layout
+## Stock eMMC / Android partition layout
 
-The following information was obtained from the development unit by read-only inspection of the original Android installation. It is intentionally recorded as **raw byte-range evidence**, not as a complete GPT/MBR partition map.
+The stock Fastboot environment exposes the complete logical Linux partition map through `blkdevparts`:
 
-| Region | Raw start | Known size / end | Filesystem | Verification status |
-| --- | ---: | ---: | --- | --- |
-| Fastboot environment | `0x00400000` | `0x00010000` bytes | raw environment | location recorded from the stock boot setup; never modified by this project |
-| Android `system` | 776 MiB | 1024 MiB; ends at about 1800 MiB | ext4 | mounted read-only under Linux and inspected successfully |
-| Unknown / not yet mapped area | about 1800 MiB | about 658 MiB, up to the observed `userdata` start at 2458 MiB | unknown | **do not overwrite or merge into another filesystem** |
-| Android `userdata` | 2458 MiB | exact end/size not yet recorded | ext4 | mounted read-only and inspected successfully |
-
-Important limitations of this table:
-
-- The stock Android command line has used `blkdevparts`, so Linux partition enumeration may be defined partly by the kernel command line rather than solely by an on-disk GPT/MBR.
-- The complete eMMC partition map has **not** yet been reconstructed and documented.
-- The exact raw stock-kernel offset/size is still not confirmed.
-- The exact `/dev/mmcblk0pX` node corresponding to stock `userdata` is still not recorded in the project documentation.
-- Nothing between the end of `system` and the start of `userdata` should be treated as free space merely because its contents have not yet been identified.
-- eMMC `boot0`, `boot1`, RPMB, bootloader/auxiliary code, DDR initialization, secure storage and OTP/eFuse areas are outside the normal Linux installation workflow and must not be overwritten.
-
-The original Android filesystems were examined using read-only loop/mount paths (`ro,noload` / `norecovery`) so that the factory installation remained intact. Before any future eMMC-root migration, capture and preserve at least:
-
-```sh
-cat /proc/cmdline
-lsblk -o NAME,SIZE,FSTYPE,LABEL,PARTLABEL,MOUNTPOINT
-blkid
-cat /proc/partitions
+```text
+mmcblk0:
+  4M(fastboot),
+  4M(bootargs),
+  12M(recovery),
+  4M(deviceinfo),
+  8M(baseparam),
+  8M(pqparam),
+  20M(logo),
+  16M(fastplay),
+  40M(kernel),
+  20M(misc),
+  40M(trustedcore),
+  600M(backup),
+  1024M(system),
+  600M(cache),
+  50M(private),
+  8M(securestore),
+  -(userdata)
 ```
 
-Do not infer a new whole-disk partition layout from the partial offsets above.
+Important alignment points from that map:
+
+- `kernel` starts at **76 MiB** (`0x04C00000`). The factory `bootcmd` reads from MMC block `0x26000`, which is also exactly 76 MiB with 512-byte sectors.
+- `system` starts at **776 MiB** and occupies 1024 MiB.
+- `cache` starts at **1800 MiB** and occupies 600 MiB.
+- `private` starts at **2400 MiB** and occupies 50 MiB.
+- `securestore` starts at **2450 MiB** and occupies 8 MiB.
+- `userdata` starts at **2458 MiB** and consumes the remainder of the eMMC user area.
+- the Fastboot environment is at `0x00400000`, size `0x00010000`, i.e. the first 64 KiB of the logical `bootargs` region.
+
+The complete per-partition start/end table, relevant factory environment, stock kernel load arithmetic and safety notes are documented in [`docs/hg680ka/boot-emmc-layout.md`](docs/hg680ka/boot-emmc-layout.md).
+
+This logical map comes from the board's factory `bootargs`; it should be treated as authoritative for the stock Linux partition enumeration. It is not permission to rewrite the internal eMMC. eMMC `boot0`, `boot1`, RPMB, bootloader/auxiliary code, DDR initialization, trusted/secure storage and OTP/eFuse areas remain outside the normal project installation workflow.
 
 ### Generated USB development image
 
@@ -111,10 +119,10 @@ The development workflow intentionally leaves the factory bootloader and eMMC bo
 | HDMI console Phase A | deferred | `hi_pq`, `hi_hdmi`, `hi_vou`, `hi_tde`, `hi_fb` compile and dependency audit completed; PR #6 closed without merge and runtime board validation is paused |
 | framebuffer console | deferred | paused together with HDMI/display bring-up |
 | Mali/EGL/GLES | deferred | no current display/GPU bring-up is planned |
-| Complete eMMC partition map | incomplete | `system` and `userdata` raw locations are known, but the full stock map and exact `userdata` block-device mapping still need read-only capture |
+| Stock eMMC partition map | documented | complete 17-region `blkdevparts` layout recovered from the original Fastboot environment |
 | Linux 6.18 ARM64 | planned | future official Linux 6.18.y + board patch series + TF-A/PSCI work; not a vendor 4.4 in-place upgrade |
 
-More detailed Wi-Fi/Bluetooth notes are under `docs/hg680ka/`.
+More detailed Wi-Fi/Bluetooth and boot/eMMC notes are under `docs/hg680ka/`.
 
 ## Build the vendor 4.4 kernel
 
@@ -139,16 +147,19 @@ GitHub Actions also provides reproducible build jobs for the kernel, MT7668 driv
 
 ## Non-destructive USB boot
 
-A known-good development flow is to keep the factory bootloader intact and load the kernel from the FAT partition of a USB drive:
+The stock Fastboot command loads the factory kernel to `0x1FFBFC0`; the project intentionally reuses the same RAM address for USB boot. With a generated project USB image inserted:
 
 ```text
 usb start
+fatls usb 0:1
 fatload usb 0:1 0x01FFBFC0 hi_kernel.bin
 setenv bootargs root=/dev/sda2 rootwait rw console=ttyAMA0,115200 loglevel=7
 bootm 0x01FFBFC0
 ```
 
-The `setenv` above is intentionally **temporary**. Do not run `saveenv` as part of normal bring-up. The project does not require replacing the factory bootloader or writing eMMC boot partitions.
+`fatls` is only a sanity check that `hi_kernel.bin` exists on the FAT partition. The `setenv` above is intentionally **temporary**. Do not run `saveenv` as part of normal bring-up. Reset/power-cycle restores the original factory `bootargs` and `bootcmd`.
+
+The exact factory environment and partition/load-address derivation are in [`docs/hg680ka/boot-emmc-layout.md`](docs/hg680ka/boot-emmc-layout.md).
 
 ## MT7668 firmware
 
@@ -237,6 +248,7 @@ The USB image's helper script is for writing the generated image to a **removabl
 
 ## Documentation
 
+- `docs/hg680ka/boot-emmc-layout.md` — stock Fastboot environment, complete eMMC `blkdevparts` map and USB boot path.
 - `docs/hg680ka/phase-b.md` — MT7668 Wi-Fi bring-up and validation.
 - `docs/hg680ka/phase-c.md` — MT7668 Bluetooth-over-SDIO work.
 - `firmware/hg680ka/mt7668/README.md` — selected factory firmware, hashes and installation model.
