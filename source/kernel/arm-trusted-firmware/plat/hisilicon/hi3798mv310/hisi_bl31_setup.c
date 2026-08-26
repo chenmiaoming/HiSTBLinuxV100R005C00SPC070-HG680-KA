@@ -72,6 +72,7 @@ unsigned long __COHERENT_RAM_END__;
 #define BL31_COHERENT_RAM_BASE (unsigned long)(&__COHERENT_RAM_START__)
 #define BL31_COHERENT_RAM_LIMIT (unsigned long)(&__COHERENT_RAM_END__)
 
+#define ID_AA64PFR0_ELX_NOT_IMPLEMENTED 0xf
 
 static entry_point_info_t bl33_image_ep_info, bl32_image_ep_info;
 
@@ -132,8 +133,32 @@ void bl31_early_platform_setup(bl31_params_t *from_bl2,
 	SET_SECURITY_STATE(bl33_image_ep_info.h.attr,
 			SECURE);
 #else
-	SET_SECURITY_STATE(bl33_image_ep_info.h.attr,
-			NON_SECURE);
+	{
+		uint64_t pfr0 = read_id_aa64pfr0_el1();
+		unsigned int el2 = (unsigned int)((pfr0 >> ID_AA64PFR0_EL2_SHIFT) &
+						 ID_AA64PFR0_ELX_MASK);
+
+		SET_SECURITY_STATE(bl33_image_ep_info.h.attr,
+				NON_SECURE);
+
+		/*
+		 * Factory Fastboot requests EL1 in the BL33 SPSR.  Prefer EL2 when
+		 * the CPU implements it so Linux can retain the virtualization
+		 * extensions.  TF-A context management will set SCR_EL3.HCE for an
+		 * EL2 target, and PSCI will consequently return secondary CPUs to
+		 * EL2 as well.  Keep EL1 as the architectural fallback.
+		 */
+		if (el2 != ID_AA64PFR0_ELX_NOT_IMPLEMENTED) {
+			bl33_image_ep_info.spsr = SPSR_64(MODE_EL2,
+					MODE_SP_ELX, DISABLE_ALL_EXCEPTIONS);
+			INFO("BL33 normal-world handoff target: EL2 (PFR0.EL2=0x%x)\n",
+				el2);
+		} else {
+			bl33_image_ep_info.spsr = SPSR_64(MODE_EL1,
+					MODE_SP_ELX, DISABLE_ALL_EXCEPTIONS);
+			INFO("BL33 normal-world handoff target: EL1 (EL2 absent)\n");
+		}
+	}
 
 #endif
 
