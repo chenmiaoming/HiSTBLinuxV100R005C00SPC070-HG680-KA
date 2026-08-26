@@ -61,6 +61,7 @@ jobs:
 
           test -s "$ART/bl31.bin"
           test -s "$ART/bl33-smoke.elf"
+          test -s "$ART/bl33-smoke.bin"
           test -s "$ART/bl33-smoke.uImage"
           test -s "$ART/bl33-smoke.dtb"
           test -s "$ART/bl33.bin"
@@ -74,6 +75,25 @@ jobs:
           grep -F 'Entry Point:  00080000' "$RUNNER_TEMP/uimage-info.txt"
           grep -F 'EL3 Runtime Firmware BL31' "$ART/FIP-DUMP.txt"
           grep -F 'Non-Trusted Firmware BL33' "$ART/FIP-DUMP.txt"
+
+          # The vendor ARM32 load_fip() computes the FDT pointer as
+          # image_get_image_end(hdr) and its libfdt reads struct fdt_header
+          # fields with native 32-bit loads.  The first board test aborted with
+          # fdt=0x020071b6, so assert both the payload-relative and final FIP
+          # offsets keep the DTB 8-byte aligned.
+          payload_size=$(stat -c %s "$ART/bl33-smoke.bin")
+          uimage_size=$(stat -c %s "$ART/bl33-smoke.uImage")
+          (( payload_size % 8 == 0 ))
+          (( uimage_size % 8 == 0 ))
+          bl33_off_hex=$(sed -n 's/.*Non-Trusted Firmware BL33: offset=0x\([0-9A-Fa-f]*\).*/\1/p' "$ART/FIP-DUMP.txt")
+          test -n "$bl33_off_hex"
+          bl33_off=$((16#$bl33_off_hex))
+          fdt_off=$((bl33_off + uimage_size))
+          (( fdt_off % 8 == 0 ))
+          printf 'BL33 payload size: %u bytes\n' "$payload_size"
+          printf 'BL33 uImage size:  %u bytes\n' "$uimage_size"
+          printf 'FDT FIP offset:    0x%x (8-byte aligned)\n' "$fdt_off"
+
           (cd "$ART" && sha256sum -c SHA256SUMS)
 
       - name: Upload ARM64 handoff artifacts
