@@ -18,7 +18,7 @@
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
  * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
  * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
  * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
@@ -74,23 +74,21 @@
 #define PLAT_MAX_RET_STATE      1
 
 /*******************************************************************************
- * BL31 placement. 0x04400000 matches CONFIG_BL31_BASE in the MV310 Fastboot
- * configuration when TEE is disabled, which is the Phase ARM64-A bring-up mode.
+ * BL31 placement for the factory HG680-KA Fastboot handoff.
+ *
+ * The board's installed Fastboot was observed on hardware to print:
+ *
+ *   Move bl31 img ... to 0x8020000
+ *
+ * and then programs the same CONFIG_BL31_BASE into RVBAR before issuing the
+ * warm reset.  The vendor MV310 Fastboot source selects 0x08020000 when
+ * CONFIG_TEE_SUPPORT is enabled without a CONFIG_TEE_MEM_LAYOUT_* override.
+ *
+ * BL31 is not position independent in this old TF-A tree, so its link address
+ * must match the address used by the installed first-stage loader exactly.
  ******************************************************************************/
 #define BL31_SIZE                       0x20000
-#ifdef CONFIG_TEE_SUPPORT
-#if defined(CONFIG_TEE_MEM_LAYOUT_2G)
-#define BL31_BASE                       0x7aa00000
-#elif defined(CONFIG_TEE_MEM_LAYOUT_1G)
-#define BL31_BASE                       0x3aa00000
-#elif defined(CONFIG_TEE_MEM_LAYOUT_1_5G)
-#define BL31_BASE                       0x5aa00000
-#elif defined(CONFIG_TEE_MEM_LAYOUT_512M)
-#define BL31_BASE                       0x1aa00000
-#endif
-#else
-#define BL31_BASE                       0x04400000
-#endif
+#define BL31_BASE                       0x08020000
 #define BL31_LIMIT                      (BL31_BASE + BL31_SIZE - 1)
 
 #define ADDR_SPACE_SIZE         (1ull << 32)
