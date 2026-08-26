@@ -154,6 +154,14 @@ jobs:
           test -n "$SDIO_HELPER"
           test -n "$KCONFIG"
 
+          # The factory bootcmd reads exactly 0x5000 512-byte sectors from the
+          # 40 MiB kernel partition, i.e. only the first 10 MiB. Keep generated
+          # hi_kernel.bin compatible with that unchanged stock boot command.
+          KERNEL_BYTES="$(stat -c %s "$KERNEL_BIN")"
+          FASTBOOT_READ_BYTES=$((0x5000 * 512))
+          echo "hi_kernel.bin: $KERNEL_BYTES bytes; stock Fastboot read limit: $FASTBOOT_READ_BYTES bytes"
+          test "$KERNEL_BYTES" -le "$FASTBOOT_READ_BYTES"
+
           cp "$KERNEL_BIN" artifacts/hi_kernel.bin
           cp "$UIMAGE" artifacts/uImage
           cp "$DTB" artifacts/hi3798mv310.dtb
