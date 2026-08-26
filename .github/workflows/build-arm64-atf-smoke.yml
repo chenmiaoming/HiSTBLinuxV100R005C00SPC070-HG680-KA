@@ -69,7 +69,9 @@ jobs:
           file "$ART/bl33-smoke.elf"
           file "$ART/bl33-smoke.dtb"
           readelf -h "$ART/bl33-smoke.elf" | grep -F 'AArch64'
-          mkimage -l "$ART/bl33-smoke.uImage"
+          mkimage -l "$ART/bl33-smoke.uImage" | tee "$RUNNER_TEMP/uimage-info.txt"
+          grep -F 'Load Address: 00080000' "$RUNNER_TEMP/uimage-info.txt"
+          grep -F 'Entry Point:  00080000' "$RUNNER_TEMP/uimage-info.txt"
           grep -F 'EL3 Runtime Firmware BL31' "$ART/FIP-DUMP.txt"
           grep -F 'Non-Trusted Firmware BL33' "$ART/FIP-DUMP.txt"
           (cd "$ART" && sha256sum -c SHA256SUMS)

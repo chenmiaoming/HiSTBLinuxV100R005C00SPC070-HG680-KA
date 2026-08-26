@@ -34,13 +34,18 @@ make -C "$SMOKE" \
 
 # Build only BL31. The factory Fastboot remains responsible for DDR and image
 # loading; BL1/BL2 are intentionally outside this non-destructive bring-up path.
+#
+# Keep DISABLE_TEE=0 even though no BL32/SPD is used. In this vendor TF-A tree
+# DISABLE_TEE=1 deliberately turns BL33 into Secure-world EL1 and skips the
+# normal GIC secure setup. For a conventional ARM64 Linux path BL33 must remain
+# non-secure, so use the normal-world path with SPD=none.
 ATF_OUT="$OUT/atf"
 make -C "$ATF" \
         PLAT=hi3798mv310 \
         CROSS_COMPILE="$CROSS_COMPILE" \
         O="$ATF_OUT" \
         SPD=none \
-        DISABLE_TEE=1 \
+        DISABLE_TEE=0 \
         DEBUG=1 \
         bl31 \
         -j"$(nproc)"

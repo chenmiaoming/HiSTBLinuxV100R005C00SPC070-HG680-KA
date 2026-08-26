@@ -7,6 +7,10 @@ OBJCOPY := $(CROSS_COMPILE)objcopy
 DTC     ?= dtc
 MKIMAGE ?= mkimage
 
+# The vendor BL31 does not use the legacy uImage load address. It copies BL33
+# to image_get_ep(), so keep both fields at the MV310 vendor ARM64 kernel base.
+BL33_ADDR ?= 0x00080000
+
 .PHONY: all clean
 
 all: $(OUT)/bl33.bin
@@ -27,7 +31,8 @@ $(OUT)/smoke.dtb: smoke.dts | $(OUT)
 	$(DTC) -I dts -O dtb -o $@ $<
 
 $(OUT)/smoke.uImage: $(OUT)/smoke.bin
-	$(MKIMAGE) -A arm64 -O linux -T kernel -C none -a 0 -e 0 \
+	$(MKIMAGE) -A arm64 -O linux -T kernel -C none \
+		-a $(BL33_ADDR) -e $(BL33_ADDR) \
 		-n 'HG680KA ARM64 BL33 smoke' -d $< $@
 
 # The vendor load_fip() expects the FDT immediately after image_get_image_end()
