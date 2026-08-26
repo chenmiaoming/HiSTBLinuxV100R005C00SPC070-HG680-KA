@@ -34,17 +34,16 @@
 #include <common_def.h>
 #include <arch.h>
 
-
 /*******************************************************************************
  * Platform binary types for linking
  ******************************************************************************/
 #define PLATFORM_LINKER_FORMAT          "elf64-littleaarch64"
 #define PLATFORM_LINKER_ARCH            aarch64
 
-/* Size of cacheable stacks, May need fix */
+/* Size of cacheable stacks. */
 #if DEBUG_XLAT_TABLE
 #define PLATFORM_STACK_SIZE 0x800
-#eli
+#elif IMAGE_BL1
 #define PLATFORM_STACK_SIZE 0x440
 #elif IMAGE_BL2
 #define PLATFORM_STACK_SIZE 0x400
@@ -54,36 +53,29 @@
 #define PLATFORM_STACK_SIZE 0x440
 #endif
 
-/*******************************************************************************
- * Declarations and constants to access the mailboxes safely. Each mailbox is
- * aligned on the biggest cache line size in the platform. This is known only
- * to the platform as it might have a combination of integrated and external
- * caches. Such alignment ensures that two maiboxes do not sit on the same cache
- * line at any cache level. They could belong to different cpus/clusters &
- * get written while being protected by different locks causing corruption of
- * a valid mailbox address.
- ******************************************************************************/
 #define CACHE_WRITEBACK_SHIFT   6
 #define CACHE_WRITEBACK_GRANULE (1 << CACHE_WRITEBACK_SHIFT)
 
 #define FIRMWARE_WELCOME_STR            "Booting Trusted Firmware\n"
 
-#define PLATFORM_CLUSTER_COUNT		1
-#define PLATFORM_MAX_CPUS_PER_CLUSTER	4
+#define PLATFORM_CLUSTER_COUNT          1
+#define PLATFORM_MAX_CPUS_PER_CLUSTER   4
 
 #define PLAT_MAX_PWR_LVL                MPIDR_AFFLVL1
 #define PLATFORM_CORE_COUNT             (PLATFORM_CLUSTER_COUNT * \
                                          PLATFORM_MAX_CPUS_PER_CLUSTER)
 #define PLAT_NUM_PWR_DOMAINS            (PLATFORM_CORE_COUNT + \
                                          PLATFORM_CLUSTER_COUNT + 1)
+
 /*******************************************************************************
  * Platform power states
  ******************************************************************************/
-#define PLAT_MAX_OFF_STATE	2
-#define PLAT_MAX_RET_STATE	1
+#define PLAT_MAX_OFF_STATE      2
+#define PLAT_MAX_RET_STATE      1
 
 /*******************************************************************************
- * BL31 specific defines.
+ * BL31 placement. 0x04400000 matches CONFIG_BL31_BASE in the MV310 Fastboot
+ * configuration when TEE is disabled, which is the Phase ARM64-A bring-up mode.
  ******************************************************************************/
 #define BL31_SIZE                       0x20000
 #ifdef CONFIG_TEE_SUPPORT
@@ -97,14 +89,12 @@
 #define BL31_BASE                       0x1aa00000
 #endif
 #else
-#define BL31_BASE                       0x4400000
+#define BL31_BASE                       0x04400000
 #endif
 #define BL31_LIMIT                      (BL31_BASE + BL31_SIZE - 1)
 
 #define ADDR_SPACE_SIZE         (1ull << 32)
 #define MAX_XLAT_TABLES         4
 #define MAX_MMAP_REGIONS        16
-
-
 
 #endif /* __PLATFORM_DEF_H__ */

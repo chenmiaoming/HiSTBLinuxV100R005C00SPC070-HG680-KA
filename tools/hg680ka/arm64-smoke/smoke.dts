@@ -1,0 +1,11 @@
+/dts-v1/;
+
+/ {
+        compatible = "fiberhome,hg680-ka", "hisilicon,hi3798mv310";
+        model = "FiberHome HG-680-KA ARM64 handoff smoke test";
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        chosen {
+        };
+};
