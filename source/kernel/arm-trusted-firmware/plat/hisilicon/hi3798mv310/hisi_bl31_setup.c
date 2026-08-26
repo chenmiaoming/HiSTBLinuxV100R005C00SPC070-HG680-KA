@@ -229,7 +229,8 @@ void bl31_plat_arch_setup(void)
 	uintptr_t fdt = bl33_image_ep_info.args.arg0;
 	uintptr_t bl33_dst = bl33_image_ep_info.args.arg1;
 	uintptr_t bl33_src = bl33_image_ep_info.pc;
-	uint64_t bl33_size = bl33_image_ep_info.args.arg2;
+	uint64_t vendor_bl33_size = bl33_image_ep_info.args.arg2;
+	uint64_t bl33_size = vendor_bl33_size;
 	uintptr_t atags_end = bl33_image_ep_info.args.arg4;
 	uint64_t fdt_max_size = bl33_image_ep_info.args.arg5;
 
@@ -240,7 +241,25 @@ void bl31_plat_arch_setup(void)
 			BL31_COHERENT_RAM_BASE,
 			BL31_COHERENT_RAM_LIMIT);
 
-	INFO("Move bl33 from 0x%lx to 0x%lx, %u Bytes\n", bl33_src, bl33_dst, bl33_size);
+	/*
+	 * The factory Fastboot ARM64 FIP ABI sets arg2 to
+	 *
+	 *     BL33 FIP entry size - sizeof(legacy uImage header)
+	 *
+	 * which includes both the uImage payload and the trailing DTB.  It also
+	 * passes arg0 as image_get_image_end(hdr), i.e. the first byte of that DTB.
+	 * Derive the real BL33 payload size from those two source pointers so the
+	 * DTB is not duplicated into the kernel destination at 0x80000.
+	 */
+	if ((fdt > bl33_src) && ((uint64_t)(fdt - bl33_src) <= vendor_bl33_size)) {
+		bl33_size = (uint64_t)(fdt - bl33_src);
+	} else {
+		WARN("Invalid vendor BL33/FDT bounds; using ABI size %lu Bytes\n",
+			(unsigned long)vendor_bl33_size);
+	}
+
+	INFO("Move bl33 from 0x%lx to 0x%lx, %lu Bytes\n",
+		bl33_src, bl33_dst, (unsigned long)bl33_size);
 	memmove((void *)bl33_dst, (void *)bl33_src, bl33_size);
 	flush_dcache_range(bl33_dst, bl33_size);
 	bl33_image_ep_info.pc = bl33_dst;
@@ -252,8 +271,9 @@ void bl31_plat_arch_setup(void)
 	  initial page tables. To simplify the implemention, we fix the dtb location
 	  to the tail of TAG params area.
 	*/
-	INFO("Move dtb from 0x%lx to 0x%lx, %u Bytes\n", fdt, atags_end, fdt_max_size);
-	memmove(atags_end, fdt, fdt_max_size);
+	INFO("Move dtb from 0x%lx to 0x%lx, %lu Bytes\n",
+		fdt, atags_end, (unsigned long)fdt_max_size);
+	memmove((void *)atags_end, (const void *)fdt, fdt_max_size);
 	flush_dcache_range(atags_end, fdt_max_size);
 	bl33_image_ep_info.args.arg0 = atags_end;
 }
