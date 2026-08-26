@@ -60,12 +60,18 @@ jobs:
           ART="$RUNNER_TEMP/hg680ka-arm64/artifacts"
 
           test -s "$ART/bl31.bin"
+          test -s "$ART/bl31.elf"
           test -s "$ART/bl33-smoke.elf"
           test -s "$ART/bl33-smoke.bin"
           test -s "$ART/bl33-smoke.uImage"
           test -s "$ART/bl33-smoke.dtb"
           test -s "$ART/bl33.bin"
           test -s "$ART/hg680ka-arm64-smoke.fip"
+
+          file "$ART/bl31.elf"
+          readelf -h "$ART/bl31.elf" | tee "$RUNNER_TEMP/bl31-elf-header.txt"
+          grep -F 'Machine:                           AArch64' "$RUNNER_TEMP/bl31-elf-header.txt"
+          grep -E 'Entry point address:[[:space:]]+0x8020000$' "$RUNNER_TEMP/bl31-elf-header.txt"
 
           file "$ART/bl33-smoke.elf"
           file "$ART/bl33-smoke.dtb"
@@ -78,7 +84,7 @@ jobs:
 
           # The vendor ARM32 load_fip() computes the FDT pointer as
           # image_get_image_end(hdr) and its libfdt reads struct fdt_header
-          # fields with native 32-bit loads.  The first board test aborted with
+          # fields with native 32-bit loads. The first board test aborted with
           # fdt=0x020071b6, so assert both the payload-relative and final FIP
           # offsets keep the DTB 8-byte aligned.
           payload_size=$(stat -c %s "$ART/bl33-smoke.bin")
