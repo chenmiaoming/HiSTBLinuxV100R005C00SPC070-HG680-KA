@@ -13,6 +13,8 @@ KERNEL_LOAD_ADDR=0x00200000
 
 DTS="$ROOT/linux-6.18/hg680ka-minimal.dts"
 SMP_INSTRUMENT="$ROOT/linux-6.18/instrument-secondary.py"
+ATF_SMP_INSTRUMENT="$ROOT/linux-6.18/instrument-atf-smpen.py"
+ATF_PM="$ROOT/source/kernel/arm-trusted-firmware/plat/hisilicon/hi3798mv310/hisi_pm.c"
 WORK="$OUT/work"
 SRC="$WORK/linux-${LINUX_VERSION}"
 KOUT="$OUT/kernel"
@@ -37,6 +39,8 @@ done
 
 test -s "$DTS"
 test -s "$SMP_INSTRUMENT"
+test -s "$ATF_SMP_INSTRUMENT"
+test -s "$ATF_PM"
 
 printf 'Fetching Linux %s from kernel.org...\n' "$LINUX_VERSION"
 curl --fail --location --retry 3 --output "$WORK/$LINUX_ARCHIVE" "$LINUX_URL"
@@ -55,6 +59,7 @@ grep -F 'hg680ka_uart_marker 0x41' "$SRC/arch/arm64/kernel/head.S"
 grep -F 'hg680ka_uart_marker 0x42' "$SRC/arch/arm64/kernel/head.S"
 grep -F 'hg680ka_uart_marker 0x43' "$SRC/arch/arm64/kernel/head.S"
 grep -F 'hg680ka_uart_marker 0x44' "$SRC/arch/arm64/kernel/head.S"
+grep -F 'hg680ka_uart_marker 0x45' "$SRC/arch/arm64/kernel/head.S"
 
 printf 'Building Linux %s ARM64 defconfig...\n' "$LINUX_VERSION"
 make -C "$SRC" O="$KOUT" ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" defconfig
@@ -108,6 +113,12 @@ mkimage -A arm64 -O linux -T kernel -C none \
 	-d "$PADDED_IMAGE" "$UIMAGE"
 (( $(stat -c %s "$UIMAGE") % 8 == 0 ))
 
+# The Cortex-A53 secondary reaches Linux with the MMU off but stalls at the
+# cacheable MMU transition. Verify CPUECTLR_EL1.SMPEN at the final PSCI EL3
+# stage and force bit 6 on if an old TF-A reset path left coherency disabled.
+python3 "$ATF_SMP_INSTRUMENT" "$ATF_PM"
+grep -F 'HG680-KA SMPEN diagnostic' "$ATF_PM"
+
 # Reuse the hardware-proven vendor TF-A build path. This also asserts BL31 is
 # linked at factory Fastboot's observed RVBAR address 0x08020000.
 bash "$ROOT/scripts/hg680ka/build-arm64-atf-smoke.sh" "$ATF_OUT"
@@ -141,6 +152,7 @@ cp "$BL31" "$ART/bl31.bin"
 cp "$BL31_ELF" "$ART/bl31.elf"
 cp "$DTS" "$ART/hg680ka-minimal.dts"
 cp "$SMP_INSTRUMENT" "$ART/instrument-secondary.py"
+cp "$ATF_SMP_INSTRUMENT" "$ART/instrument-atf-smpen.py"
 
 printf 'Linux raw Image size: %u bytes\n' "$image_size" | tee -a "$ART/BUILD-INFO.txt"
 printf 'Linux padded size:    %u bytes\n' "$padded_size" | tee -a "$ART/BUILD-INFO.txt"
