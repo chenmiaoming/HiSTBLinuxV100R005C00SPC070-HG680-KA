@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: HG680-KA bring-up <noreply@example.com>
+Date: Thu, 27 Aug 2026 00:00:00 +0000
+Subject: [PATCH] arm64: add HG680-KA secondary boot UART markers
+
+Temporary bring-up instrumentation. Emit compact physical-PL011 markers while
+secondary CPUs still run with the MMU disabled:
+
+  A<n>  entered secondary_entry
+  B<n>  returned from init_kernel_el
+  C<n>  entered secondary_startup
+  D<n>  returned from __cpu_setup, immediately before __enable_mmu
+
+<n> is MPIDR Aff0. The code deliberately uses only x9/x10, which are scratch
+registers at these entry points, and does not depend on a stack or page tables.
+---
+ arch/arm64/kernel/head.S | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/arch/arm64/kernel/head.S b/arch/arm64/kernel/head.S
+index 000000000000..111111111111 100644
+--- a/arch/arm64/kernel/head.S
++++ b/arch/arm64/kernel/head.S
+@@ -1,3 +1,15 @@
++/* HG680-KA temporary secondary CPU bring-up marker. */
++	.macro	hg680ka_uart_marker, ch
++	movz	x9, #0xf8b0, lsl #16
++	mov	w10, #\ch
++	str	w10, [x9]
++	mrs	x10, mpidr_el1
++	and	w10, w10, #0xff
++	add	w10, w10, #'0'
++	str	w10, [x9]
++	mov	w10, #' '
++	str	w10, [x9]
++	.endm
++
+@@ -1030,8 +1042,10 @@ SYM_FUNC_END(secondary_holding_pen)
+  * Secondary entry point that jumps straight into the kernel. Only to
+  * be used where CPUs are brought online dynamically by the kernel.
+  */
+ SYM_FUNC_START(secondary_entry)
++	hg680ka_uart_marker 0x41
+ 	mov	x0, xzr
+ 	bl	init_kernel_el			// w0=cpu_boot_mode
++	hg680ka_uart_marker 0x42
+ 	b	secondary_startup
+ SYM_FUNC_END(secondary_entry)
+ 
+@@ -1041,6 +1055,7 @@ SYM_FUNC_START_LOCAL(secondary_startup)
+ 	 * Common entry point for secondary CPUs.
+ 	 */
+ 	mov	x20, x0				// preserve boot mode
++	hg680ka_uart_marker 0x43
+ 
+ #ifdef CONFIG_ARM64_VA_BITS_52
+ alternative_if ARM64_HAS_VA52
+@@ -1050,6 +1065,7 @@ alternative_else_nop_endif
+ #endif
+ 
+ 	bl	__cpu_setup			// initialise processor
++	hg680ka_uart_marker 0x44
+ 	adrp	x1, swapper_pg_dir
+ 	adrp	x2, idmap_pg_dir
+ 	bl	__enable_mmu
+-- 
+2.39.2
