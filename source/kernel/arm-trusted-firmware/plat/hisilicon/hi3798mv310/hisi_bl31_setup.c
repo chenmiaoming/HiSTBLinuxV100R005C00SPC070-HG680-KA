@@ -53,22 +53,8 @@ unsigned long __RO_END__;
 unsigned long __COHERENT_RAM_START__;
 unsigned long __COHERENT_RAM_END__;
 
-/*
- * The next 2 constants identify the extents of the code & RO data region.
- * These addresses are used by the MMU setup code and therefore they must be
- * page-aligned. It is the responsibility of the linker script to ensure that
- * __RO_START__ and __RO_END__ linker symbols refer to page-aligned addresses.
- */
 #define BL31_RO_BASE (unsigned long)(&__RO_START__)
 #define BL31_RO_LIMIT (unsigned long)(&__RO_END__)
-
-/*
- * The next 2 constants identify the extents of the coherent memory region.
- * These addresses are used by the MMU setup code and therefore they must be
- * page-aligned. It is the responsibility of the linker script to ensure that
- * __COHERENT_RAM_START__ and __COHERENT_RAM_END__ linker symbols
- * refer to page-aligned addresses.
- */
 #define BL31_COHERENT_RAM_BASE (unsigned long)(&__COHERENT_RAM_START__)
 #define BL31_COHERENT_RAM_LIMIT (unsigned long)(&__COHERENT_RAM_END__)
 
@@ -76,16 +62,8 @@ unsigned long __COHERENT_RAM_END__;
 
 static entry_point_info_t bl33_image_ep_info, bl32_image_ep_info;
 
-/*******************************************************************************
- * This variable holds the non-secure image entry address
- ******************************************************************************/
 extern uint64_t ns_image_entrypoint;
 
-/*******************************************************************************
- * Return a pointer to the 'entry_point_info' structure of the next image for
- * security state specified. BL33 corresponds to the non-secure image type
- * while BL32 corresponds to the secure image type.
- ******************************************************************************/
 #if DISABLE_TEE == 1
 entry_point_info_t *bl31_plat_get_next_image_ep_info(uint32_t type)
 {
@@ -104,47 +82,31 @@ entry_point_info_t *bl31_plat_get_next_image_ep_info(uint32_t type)
 }
 #endif
 
-/*******************************************************************************
- * Perform any BL31 specific platform actions. Populate the BL33 and BL32 image
- * info.
- ******************************************************************************/
 void bl31_early_platform_setup(bl31_params_t *from_bl2,
 				void *plat_params_from_bl2)
 {
-
-	/* Configure the UART port to be used as the console. */
-	console_init(HISI_UART0_BASE, HISI_UART_CLOCK,
-			HISI_BAUDRATE);
-
-	/* Initialise crash console. */
+	console_init(HISI_UART0_BASE, HISI_UART_CLOCK, HISI_BAUDRATE);
 	plat_crash_console_init();
 
 #if 1
-	/*
-	 * Copy BL3-3, BL3-2 entry point information.
-	 * They are stored in Secure RAM, in BL2's address space.
-	 */
 	bl33_image_ep_info = *from_bl2->bl33_ep_info;
 	bl32_image_ep_info = *from_bl2->bl32_ep_info;
 
 #if DISABLE_TEE == 1
-	SET_SECURITY_STATE(bl33_image_ep_info.h.attr,
-			SECURE);
+	SET_SECURITY_STATE(bl33_image_ep_info.h.attr, SECURE);
 #else
 	{
 		uint64_t pfr0 = read_id_aa64pfr0_el1();
 		unsigned int el2 = (unsigned int)((pfr0 >> ID_AA64PFR0_EL2_SHIFT) &
 						 ID_AA64PFR0_ELX_MASK);
 
-		SET_SECURITY_STATE(bl33_image_ep_info.h.attr,
-				NON_SECURE);
+		SET_SECURITY_STATE(bl33_image_ep_info.h.attr, NON_SECURE);
 
 		/*
 		 * Factory Fastboot requests EL1 in the BL33 SPSR. Prefer EL2 when
-		 * the CPU implements it so Linux can retain the virtualization
-		 * extensions. TF-A context management will set SCR_EL3.HCE for an
-		 * EL2 target, and PSCI will consequently return secondary CPUs to
-		 * EL2 as well. Keep EL1 as the architectural fallback.
+		 * available so Linux keeps the virtualization extensions. TF-A's
+		 * context management sets SCR_EL3.HCE for an EL2 target and PSCI uses
+		 * the same target level for secondary CPUs.
 		 */
 		if (el2 != ID_AA64PFR0_ELX_NOT_IMPLEMENTED) {
 			bl33_image_ep_info.spsr = SPSR_64(MODE_EL2,
@@ -157,92 +119,43 @@ void bl31_early_platform_setup(bl31_params_t *from_bl2,
 			INFO("BL33 normal-world handoff target: EL1 (EL2 absent)\n");
 		}
 	}
-
 #endif
 
 #else
-
-	/* fix me later , pass the addr from uboot*/
 	bl32_image_ep_info.pc = (uintptr_t)0x7e008000;
-	SET_SECURITY_STATE(bl32_image_ep_info.h.attr,
-			SECURE);
-
-	/*
-	 * The Secure Payload Dispatcher service is responsible for
-	 * setting the SPSR prior to entry into the BL32 image.
-	 */
+	SET_SECURITY_STATE(bl32_image_ep_info.h.attr, SECURE);
 	bl32_image_ep_info.spsr = 0;
 
-	bl33_image_ep_info.pc = (uintptr_t)0x1080000 ;
-	/* pass dtb address */
-	bl33_image_ep_info.args.arg0 = (uintptr_t)0x2000000 ;
+	bl33_image_ep_info.pc = (uintptr_t)0x1080000;
+	bl33_image_ep_info.args.arg0 = (uintptr_t)0x2000000;
 	bl33_image_ep_info.spsr = SPSR_64(MODE_EL1,
 			MODE_SP_ELX, DISABLE_ALL_EXCEPTIONS);
-	SET_SECURITY_STATE(bl33_image_ep_info.h.attr,
-			NON_SECURE);
-
+	SET_SECURITY_STATE(bl33_image_ep_info.h.attr, NON_SECURE);
 #endif
 }
 
-/*******************************************************************************
- * Initialize the gic, configure the SCR.
- ******************************************************************************/
 #if DISABLE_TEE == 1
-void bl31_platform_setup(void){
+void bl31_platform_setup(void)
+{
 	plat_delay_timer_init();
 
-#if 1
-        __asm volatile("mrs     x0, cnthctl_el2\n"
-                        "orr     x0, x0, #0x3\n"
-                        "msr     cnthctl_el2, x0\n"
-                        "msr    cntvoff_el2, xzr\n"
-                        "msr     cntvoff_el2, x0\n"
-                        "orr     x0, x0, #0x3\n"
-                        "msr     cntkctl_el1, x0\n");
-
-#endif
+	__asm volatile("mrs     x0, cnthctl_el2\n"
+			"orr     x0, x0, #0x3\n"
+			"msr     cnthctl_el2, x0\n"
+			"msr     cntvoff_el2, xzr\n"
+			"msr     cntvoff_el2, x0\n"
+			"orr     x0, x0, #0x3\n"
+			"msr     cntkctl_el1, x0\n");
 }
 #else
 void bl31_platform_setup(void)
 {
-         plat_delay_timer_init();
-
-         /* Initialize the gic cpu and distributor interfaces */
-         plat_hisi_gic_init();
-         arm_gic_setup();
+	plat_delay_timer_init();
+	plat_hisi_gic_init();
+	arm_gic_setup();
 }
 #endif
-#if 0
-static void dump_mem(char *phyaddr, uint32_t size)
-{
-        char *p = 0;
 
-        if (phyaddr == NULL) {
-                ERROR("%s:Invalid addr!\n", __func__);
-                return;
-        }
-
-        p = phyaddr;
-        while (p < (phyaddr + size)) {
-                if (!((p - phyaddr) % 16) && ((p - phyaddr) != 0)) {
-                        NOTICE("\n");
-                        INFO("0x%x: %x ", p, *((unsigned int *)p));
-                } else if ((p - phyaddr) == 0) {
-                        INFO("0x%x: %x ", p, *((unsigned int *)p));
-                } else
-                        NOTICE("%x ", *((unsigned int *)p));
-
-                p+=4;
-        }
-
-	NOTICE("\n");
-	NOTICE("\n");
-}
-#endif
-/*******************************************************************************
- * Perform the very early platform specific architectural setup here. At the
- * moment this only intializes the mmu in a quick and dirty way.
- ******************************************************************************/
 void bl31_plat_arch_setup(void)
 {
 	uintptr_t fdt = bl33_image_ep_info.args.arg0;
@@ -250,6 +163,7 @@ void bl31_plat_arch_setup(void)
 	uintptr_t bl33_src = bl33_image_ep_info.pc;
 	uint64_t vendor_bl33_size = bl33_image_ep_info.args.arg2;
 	uint64_t bl33_size = vendor_bl33_size;
+	uint64_t dtb_size = bl33_image_ep_info.args.arg5;
 	uintptr_t atags_end = bl33_image_ep_info.args.arg4;
 	uint64_t fdt_max_size = bl33_image_ep_info.args.arg5;
 
@@ -261,17 +175,20 @@ void bl31_plat_arch_setup(void)
 			BL31_COHERENT_RAM_LIMIT);
 
 	/*
-	 * The factory Fastboot ARM64 FIP ABI sets arg2 to
-	 *
-	 *     BL33 FIP entry size - sizeof(legacy uImage header)
-	 *
-	 * which includes both the uImage payload and the trailing DTB. It also
-	 * passes arg0 as image_get_image_end(hdr), i.e. the first byte of that DTB.
-	 * Derive the real BL33 payload size from those two source pointers so the
-	 * DTB is not duplicated into the kernel destination at 0x80000.
+	 * Factory Fastboot passes arg2 as BL33 FIP entry size minus the legacy
+	 * uImage header, so it contains both payload and trailing DTB. arg0 points
+	 * exactly at the DTB. Therefore both component sizes are recoverable from
+	 * the source pointers without parsing the FDT header.
 	 */
 	if ((fdt > bl33_src) && ((uint64_t)(fdt - bl33_src) <= vendor_bl33_size)) {
 		bl33_size = (uint64_t)(fdt - bl33_src);
+		dtb_size = vendor_bl33_size - bl33_size;
+		if ((dtb_size == 0) || (dtb_size > fdt_max_size)) {
+			WARN("Invalid derived DTB size %lu; using max %lu Bytes\n",
+				(unsigned long)dtb_size,
+				(unsigned long)fdt_max_size);
+			dtb_size = fdt_max_size;
+		}
 	} else {
 		WARN("Invalid vendor BL33/FDT bounds; using ABI size %lu Bytes\n",
 			(unsigned long)vendor_bl33_size);
@@ -283,27 +200,12 @@ void bl31_plat_arch_setup(void)
 	flush_dcache_range(bl33_dst, bl33_size);
 	bl33_image_ep_info.pc = bl33_dst;
 
-	/*
-	 * The arm64 kernel requires that the device tree blob (DTB) is placed on
-	 * an 8-byte boundary within the first 512 MiB from the start of the kernel
-	 * image. Keep the vendor fixed destination at the end of the boot-parameter
-	 * area, which is 0x10100 on this board.
-	 */
 	INFO("Move dtb from 0x%lx to 0x%lx, %lu Bytes\n",
-		fdt, atags_end, (unsigned long)fdt_max_size);
-	memmove((void *)atags_end, (const void *)fdt, fdt_max_size);
-	flush_dcache_range(atags_end, fdt_max_size);
+		fdt, atags_end, (unsigned long)dtb_size);
+	memmove((void *)atags_end, (const void *)fdt, dtb_size);
+	flush_dcache_range(atags_end, dtb_size);
 
-	/*
-	 * Linux arm64 boot ABI:
-	 *   x0 = physical address of the DTB
-	 *   x1 = 0
-	 *   x2 = 0
-	 *   x3 = 0
-	 *
-	 * Factory Fastboot used x1-x3 internally to pass the relocation address,
-	 * size and boot-parameter base to BL31. They must not leak into Linux.
-	 */
+	/* Linux arm64 boot ABI: x0=DTB and x1-x3 must be zero. */
 	bl33_image_ep_info.args.arg0 = atags_end;
 	bl33_image_ep_info.args.arg1 = 0;
 	bl33_image_ep_info.args.arg2 = 0;
@@ -311,4 +213,3 @@ void bl31_plat_arch_setup(void)
 
 	INFO("Linux BL33 args: x0=0x%lx, x1=x2=x3=0\n", atags_end);
 }
-
