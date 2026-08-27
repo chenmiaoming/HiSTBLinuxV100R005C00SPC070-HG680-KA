@@ -12,6 +12,7 @@ CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
 KERNEL_LOAD_ADDR=0x00200000
 
 DTS="$ROOT/linux-6.18/hg680ka-minimal.dts"
+SMP_MARKER_PATCH="$ROOT/linux-6.18/patches/0001-arm64-hg680ka-secondary-uart-markers.patch"
 WORK="$OUT/work"
 SRC="$WORK/linux-${LINUX_VERSION}"
 KOUT="$OUT/kernel"
@@ -21,7 +22,7 @@ ATF_OUT="$OUT/atf-smoke"
 rm -rf "$OUT"
 mkdir -p "$WORK" "$KOUT" "$ART"
 
-for tool in curl tar xz dtc mkimage sha256sum make gcc readelf; do
+for tool in curl tar xz dtc mkimage sha256sum make gcc readelf patch; do
 	command -v "$tool" >/dev/null || {
 		echo "missing host tool: $tool" >&2
 		exit 1
@@ -35,6 +36,7 @@ for tool in gcc ld objcopy; do
 done
 
 test -s "$DTS"
+test -s "$SMP_MARKER_PATCH"
 
 printf 'Fetching Linux %s from kernel.org...\n' "$LINUX_VERSION"
 curl --fail --location --retry 3 --output "$WORK/$LINUX_ARCHIVE" "$LINUX_URL"
@@ -43,14 +45,19 @@ printf '%s  %s\n' "$LINUX_SHA256" "$WORK/$LINUX_ARCHIVE" | sha256sum -c -
 tar -C "$WORK" -xf "$WORK/$LINUX_ARCHIVE"
 test -d "$SRC"
 
+# Temporary hardware diagnostic: mark the secondary MMU-off path directly via
+# the physical PL011 so we can locate a stall before normal printk is usable.
+patch -d "$SRC" -p1 < "$SMP_MARKER_PATCH"
+
+grep -F 'hg680ka_uart_marker 0x41' "$SRC/arch/arm64/kernel/head.S"
+grep -F 'hg680ka_uart_marker 0x44' "$SRC/arch/arm64/kernel/head.S"
+
 printf 'Building Linux %s ARM64 defconfig...\n' "$LINUX_VERSION"
 make -C "$SRC" O="$KOUT" ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" defconfig
 
-# Keep the first hardware boot deliberately small in scope. The generic ARM64
-# defconfig supplies the core architecture support; force the facilities that
-# are part of the already-proven HG680-KA handoff path so configuration drift is
-# visible in CI rather than on the board. Once the low-level SMP path is stable,
-# this will be replaced by the board-specific hg680ka_arm64_minimal_defconfig.
+# Keep the diagnostic kernel config unchanged while isolating the SMP failure.
+# Once low-level SMP is stable this generic config will be replaced by the
+# board-specific hg680ka_arm64_minimal_defconfig.
 "$SRC/scripts/config" --file "$KOUT/.config" \
 	-e SMP \
 	-e ARM_PSCI_FW \
@@ -66,13 +73,19 @@ make -C "$SRC" O="$KOUT" ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" \
 IMAGE="$KOUT/arch/arm64/boot/Image"
 test -s "$IMAGE"
 
-# This DTS is intentionally external to the upstream tree for the first boot:
-# only RAM, PSCI, CPUs, architected timer, GICv2, UART0 and the resident BL31
-# reservation are described. Device support will be added as reviewable
-# patches only after the minimal kernel reaches the serial console.
-DTB="$ART/hi3798mv310-hg680ka-minimal.dtb"
-dtc -I dts -O dtb -o "$DTB" "$DTS"
-test -s "$DTB"
+# Build two DTBs from the same hardware description. The SMP variant preserves
+# the normal four-CPU boot. The maxcpus=1 variant bypasses secondary CPU bring-up
+# and tells us whether CPU0 can continue through init with its timer/IRQ path.
+DTB_SMP="$ART/hi3798mv310-hg680ka-smpdiag.dtb"
+dtc -I dts -O dtb -o "$DTB_SMP" "$DTS"
+test -s "$DTB_SMP"
+
+MAX1_DTS="$WORK/hg680ka-maxcpus1.dts"
+sed 's/panic=-1"/panic=-1 maxcpus=1 initcall_debug"/' "$DTS" > "$MAX1_DTS"
+grep -F 'maxcpus=1 initcall_debug' "$MAX1_DTS"
+DTB_MAX1="$ART/hi3798mv310-hg680ka-maxcpus1.dtb"
+dtc -I dts -O dtb -o "$DTB_MAX1" "$MAX1_DTS"
+test -s "$DTB_MAX1"
 
 # Factory load_fip() expects BL33 as a legacy ARM64 uImage immediately followed
 # by its DTB. Keep the uImage payload 8-byte aligned because factory ARM32
@@ -84,17 +97,11 @@ padded_size=$(( (image_size + 7) & ~7 ))
 truncate -s "$padded_size" "$PADDED_IMAGE"
 
 # Linux 6.18 requires the physical kernel image base to be 2 MiB aligned.
-# 0x00080000 was inherited from the vendor 4.4 boot path and Linux explicitly
-# warned that placement was invalid. Use 0x00200000 for both load and entry.
 UIMAGE="$ART/Image-6.18.46.uImage"
 mkimage -A arm64 -O linux -T kernel -C none \
 	-a "$KERNEL_LOAD_ADDR" -e "$KERNEL_LOAD_ADDR" \
 	-n 'HG680KA Linux 6.18.46 ARM64' \
 	-d "$PADDED_IMAGE" "$UIMAGE"
-
-BL33="$WORK/bl33-linux.bin"
-cat "$UIMAGE" "$DTB" > "$BL33"
-
 (( $(stat -c %s "$UIMAGE") % 8 == 0 ))
 
 # Reuse the hardware-proven vendor TF-A build path. This also asserts BL31 is
@@ -107,21 +114,35 @@ test -s "$BL31"
 test -s "$BL31_ELF"
 test -x "$FIP_CREATE"
 
-FIP="$ART/hg680ka-linux-${LINUX_VERSION}-minimal.fip"
-"$FIP_CREATE" --bl31 "$BL31" --bl33 "$BL33" "$FIP"
-"$FIP_CREATE" --dump "$FIP" | tee "$ART/FIP-DUMP.txt"
+pack_fip() {
+	local dtb="$1"
+	local stem="$2"
+	local bl33="$WORK/bl33-${stem}.bin"
+	local fip="$ART/hg680ka-linux-${LINUX_VERSION}-${stem}.fip"
+	local dump="$ART/FIP-DUMP-${stem}.txt"
+
+	cat "$UIMAGE" "$dtb" > "$bl33"
+	"$FIP_CREATE" --bl31 "$BL31" --bl33 "$bl33" "$fip"
+	"$FIP_CREATE" --dump "$fip" | tee "$dump"
+	printf '%s BL33 packed size: %u bytes\n' "$stem" "$(stat -c %s "$bl33")" | tee -a "$ART/BUILD-INFO.txt"
+}
+
+: > "$ART/BUILD-INFO.txt"
+pack_fip "$DTB_MAX1" maxcpus1
+pack_fip "$DTB_SMP" smpdiag
 
 cp "$IMAGE" "$ART/Image-6.18.46"
 cp "$KOUT/.config" "$ART/linux-6.18.46.config"
 cp "$BL31" "$ART/bl31.bin"
 cp "$BL31_ELF" "$ART/bl31.elf"
 cp "$DTS" "$ART/hg680ka-minimal.dts"
+cp "$SMP_MARKER_PATCH" "$ART/0001-arm64-hg680ka-secondary-uart-markers.patch"
 
-printf 'Linux raw Image size: %u bytes\n' "$image_size" | tee "$ART/BUILD-INFO.txt"
+printf 'Linux raw Image size: %u bytes\n' "$image_size" | tee -a "$ART/BUILD-INFO.txt"
 printf 'Linux padded size:    %u bytes\n' "$padded_size" | tee -a "$ART/BUILD-INFO.txt"
 printf 'Kernel load address:  0x%08x\n' "$((KERNEL_LOAD_ADDR))" | tee -a "$ART/BUILD-INFO.txt"
-printf 'DTB size:             %u bytes\n' "$(stat -c %s "$DTB")" | tee -a "$ART/BUILD-INFO.txt"
-printf 'BL33 packed size:     %u bytes\n' "$(stat -c %s "$BL33")" | tee -a "$ART/BUILD-INFO.txt"
+printf 'SMP DTB size:         %u bytes\n' "$(stat -c %s "$DTB_SMP")" | tee -a "$ART/BUILD-INFO.txt"
+printf 'maxcpus=1 DTB size:   %u bytes\n' "$(stat -c %s "$DTB_MAX1")" | tee -a "$ART/BUILD-INFO.txt"
 printf 'Linux version:        %s\n' "$LINUX_VERSION" | tee -a "$ART/BUILD-INFO.txt"
 printf 'Kernel source SHA256: %s\n' "$LINUX_SHA256" | tee -a "$ART/BUILD-INFO.txt"
 
@@ -130,17 +151,21 @@ printf 'Kernel source SHA256: %s\n' "$LINUX_SHA256" | tee -a "$ART/BUILD-INFO.tx
 	sha256sum \
 		Image-6.18.46 \
 		Image-6.18.46.uImage \
-		hi3798mv310-hg680ka-minimal.dtb \
+		hi3798mv310-hg680ka-smpdiag.dtb \
+		hi3798mv310-hg680ka-maxcpus1.dtb \
 		linux-6.18.46.config \
 		bl31.bin \
 		bl31.elf \
-		hg680ka-linux-6.18.46-minimal.fip \
+		hg680ka-linux-6.18.46-maxcpus1.fip \
+		hg680ka-linux-6.18.46-smpdiag.fip \
 		> SHA256SUMS
 	sha256sum -c SHA256SUMS
 )
 
-printf '\nHG680-KA Linux 6.18 ARM64 artifacts:\n'
+printf '\nHG680-KA Linux 6.18 ARM64 diagnostic artifacts:\n'
 ls -lh "$ART"
-printf '\nBoard test (RAM/USB only):\n'
-printf '  fatload usb 0:1 0x02000000 hg680ka-linux-%s-minimal.fip\n' "$LINUX_VERSION"
-printf '  bootm 0x02000000\n'
+printf '\nBoard tests (RAM/USB only):\n'
+printf '  1) fatload usb 0:1 0x02000000 hg680ka-linux-%s-maxcpus1.fip\n' "$LINUX_VERSION"
+printf '     bootm 0x02000000\n'
+printf '  2) fatload usb 0:1 0x02000000 hg680ka-linux-%s-smpdiag.fip\n' "$LINUX_VERSION"
+printf '     bootm 0x02000000\n'
