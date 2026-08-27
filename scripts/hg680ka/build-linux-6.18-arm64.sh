@@ -12,7 +12,7 @@ CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
 KERNEL_LOAD_ADDR=0x00200000
 
 DTS="$ROOT/linux-6.18/hg680ka-minimal.dts"
-SMP_MARKER_PATCH="$ROOT/linux-6.18/patches/0001-arm64-hg680ka-secondary-uart-markers.patch"
+SMP_INSTRUMENT="$ROOT/linux-6.18/instrument-secondary.py"
 WORK="$OUT/work"
 SRC="$WORK/linux-${LINUX_VERSION}"
 KOUT="$OUT/kernel"
@@ -22,7 +22,7 @@ ATF_OUT="$OUT/atf-smoke"
 rm -rf "$OUT"
 mkdir -p "$WORK" "$KOUT" "$ART"
 
-for tool in curl tar xz dtc mkimage sha256sum make gcc readelf patch; do
+for tool in curl tar xz dtc mkimage sha256sum make gcc readelf python3; do
 	command -v "$tool" >/dev/null || {
 		echo "missing host tool: $tool" >&2
 		exit 1
@@ -36,7 +36,7 @@ for tool in gcc ld objcopy; do
 done
 
 test -s "$DTS"
-test -s "$SMP_MARKER_PATCH"
+test -s "$SMP_INSTRUMENT"
 
 printf 'Fetching Linux %s from kernel.org...\n' "$LINUX_VERSION"
 curl --fail --location --retry 3 --output "$WORK/$LINUX_ARCHIVE" "$LINUX_URL"
@@ -47,9 +47,13 @@ test -d "$SRC"
 
 # Temporary hardware diagnostic: mark the secondary MMU-off path directly via
 # the physical PL011 so we can locate a stall before normal printk is usable.
-patch -d "$SRC" -p1 < "$SMP_MARKER_PATCH"
+# The injector checks every source anchor matches exactly once; unlike a fuzzy
+# patch this fails deterministically if Linux source layout changes.
+python3 "$SMP_INSTRUMENT" "$SRC/arch/arm64/kernel/head.S"
 
 grep -F 'hg680ka_uart_marker 0x41' "$SRC/arch/arm64/kernel/head.S"
+grep -F 'hg680ka_uart_marker 0x42' "$SRC/arch/arm64/kernel/head.S"
+grep -F 'hg680ka_uart_marker 0x43' "$SRC/arch/arm64/kernel/head.S"
 grep -F 'hg680ka_uart_marker 0x44' "$SRC/arch/arm64/kernel/head.S"
 
 printf 'Building Linux %s ARM64 defconfig...\n' "$LINUX_VERSION"
@@ -136,7 +140,7 @@ cp "$KOUT/.config" "$ART/linux-6.18.46.config"
 cp "$BL31" "$ART/bl31.bin"
 cp "$BL31_ELF" "$ART/bl31.elf"
 cp "$DTS" "$ART/hg680ka-minimal.dts"
-cp "$SMP_MARKER_PATCH" "$ART/0001-arm64-hg680ka-secondary-uart-markers.patch"
+cp "$SMP_INSTRUMENT" "$ART/instrument-secondary.py"
 
 printf 'Linux raw Image size: %u bytes\n' "$image_size" | tee -a "$ART/BUILD-INFO.txt"
 printf 'Linux padded size:    %u bytes\n' "$padded_size" | tee -a "$ART/BUILD-INFO.txt"
