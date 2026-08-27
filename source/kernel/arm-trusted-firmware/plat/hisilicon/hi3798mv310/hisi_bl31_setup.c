@@ -58,7 +58,7 @@ unsigned long __COHERENT_RAM_END__;
 #define BL31_COHERENT_RAM_BASE (unsigned long)(&__COHERENT_RAM_START__)
 #define BL31_COHERENT_RAM_LIMIT (unsigned long)(&__COHERENT_RAM_END__)
 
-#define ID_AA64PFR0_ELX_NOT_IMPLEMENTED 0xf
+#define ID_AA64PFR0_ELX_NOT_IMPLEMENTED 0x0
 
 static entry_point_info_t bl33_image_ep_info, bl32_image_ep_info;
 
@@ -103,6 +103,7 @@ void bl31_early_platform_setup(bl31_params_t *from_bl2,
 		SET_SECURITY_STATE(bl33_image_ep_info.h.attr, NON_SECURE);
 
 		/*
+		 * ID_AA64PFR0_EL2: 0 means EL2 absent; 1/2 mean EL2 is present.
 		 * Factory Fastboot requests EL1 in the BL33 SPSR. Prefer EL2 when
 		 * available so Linux keeps the virtualization extensions. TF-A's
 		 * context management sets SCR_EL3.HCE for an EL2 target and PSCI uses
