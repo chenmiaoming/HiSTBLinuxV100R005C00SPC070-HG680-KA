@@ -50,7 +50,7 @@ jobs:
             gcc-aarch64-linux-gnu \
             libelf-dev \
             libssl-dev \
-            patch \
+            python3 \
             u-boot-tools \
             xz-utils
 
@@ -74,7 +74,7 @@ jobs:
           test -s "$ART/bl31.elf"
           test -s "$ART/hg680ka-linux-6.18.46-smpdiag.fip"
           test -s "$ART/hg680ka-linux-6.18.46-maxcpus1.fip"
-          test -s "$ART/0001-arm64-hg680ka-secondary-uart-markers.patch"
+          test -s "$ART/instrument-secondary.py"
 
           grep -F 'CONFIG_SMP=y' "$ART/linux-6.18.46.config"
           grep -F 'CONFIG_ARM_PSCI_FW=y' "$ART/linux-6.18.46.config"
