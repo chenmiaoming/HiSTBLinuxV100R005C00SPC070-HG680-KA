@@ -3,10 +3,11 @@
 /*
  * Position-independent AArch64 BL33 payload for HG-680-KA.
  *
- * This validates the factory Fastboot -> BL31 -> non-secure EL1 handoff and
- * then exercises PSCI_VERSION plus CPU_ON for CPU1-CPU3.  Keep the payload
- * stackless and position independent so the same image can be relocated by the
- * vendor BL31 to the uImage entry address at 0x00080000.
+ * This validates the factory Fastboot -> BL31 -> non-secure EL2/EL1 handoff,
+ * checks the Linux arm64 boot argument ABI, and then exercises PSCI_VERSION
+ * plus CPU_ON for CPU1-CPU3. Keep the payload stackless and position
+ * independent so the same image can be relocated by the vendor BL31 to the
+ * uImage entry address at 0x00080000.
  */
 
 .equ UART0_BASE_HI, 0xf8b0
@@ -18,6 +19,12 @@
 .global _start
 .type   _start, %function
 _start:
+        /* Preserve the BL33 entry registers before any helper call clobbers them. */
+        mov     x23, x0
+        mov     x24, x1
+        mov     x25, x2
+        mov     x26, x3
+
         adr     x0, banner
         bl      puts
 
@@ -26,6 +33,25 @@ _start:
         and     w0, w1, #0x3
         add     w0, w0, #48
         bl      putc
+
+        adr     x0, boot_x0_prefix
+        bl      puts
+        mov     x0, x23
+        bl      put_hex64
+        adr     x0, boot_x1_prefix
+        bl      puts
+        mov     x0, x24
+        bl      put_hex64
+        adr     x0, boot_x2_prefix
+        bl      puts
+        mov     x0, x25
+        bl      put_hex64
+        adr     x0, boot_x3_prefix
+        bl      puts
+        mov     x0, x26
+        bl      put_hex64
+        adr     x0, newline
+        bl      puts
 
         adr     x0, psci_version_prefix
         bl      puts
@@ -93,7 +119,7 @@ _start:
 .size _start, . - _start
 
 /*
- * PSCI CPU_ON enters a non-secure AArch64 target with x0=context_id.  CPU0 is
+ * PSCI CPU_ON enters a non-secure AArch64 target with x0=context_id. CPU0 is
  * deliberately quiet for a short period after each CPU_ON, so the secondary
  * UART messages do not normally overlap one another.
  */
@@ -184,8 +210,16 @@ putc:
 .section .rodata, "a"
 banner:
         .asciz  "\r\nHG680KA ARM64 BL33 smoke: CurrentEL=EL"
+boot_x0_prefix:
+        .asciz  "\r\nBL33 boot args: x0=0x"
+boot_x1_prefix:
+        .asciz  " x1=0x"
+boot_x2_prefix:
+        .asciz  " x2=0x"
+boot_x3_prefix:
+        .asciz  " x3=0x"
 psci_version_prefix:
-        .asciz  "\r\nPSCI_VERSION=0x"
+        .asciz  "PSCI_VERSION=0x"
 secondary_prefix:
         .asciz  "Secondary CPU"
 secondary_mpidr:
