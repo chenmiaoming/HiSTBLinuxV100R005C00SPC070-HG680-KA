@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   build-linux-6-18-arm64:
-    name: Linux 6.18.46 minimal ARM64 FIP
+    name: Linux 6.18.46 ARM64 SMP diagnostics
     runs-on: ubuntu-22.04
     timeout-minutes: 90
 
@@ -50,10 +50,11 @@ jobs:
             gcc-aarch64-linux-gnu \
             libelf-dev \
             libssl-dev \
+            patch \
             u-boot-tools \
             xz-utils
 
-      - name: Build Linux 6.18.46 minimal ARM64 FIP
+      - name: Build Linux 6.18.46 diagnostic FIPs
         shell: bash
         run: |
           set -euo pipefail
@@ -67,10 +68,13 @@ jobs:
 
           test -s "$ART/Image-6.18.46"
           test -s "$ART/Image-6.18.46.uImage"
-          test -s "$ART/hi3798mv310-hg680ka-minimal.dtb"
+          test -s "$ART/hi3798mv310-hg680ka-smpdiag.dtb"
+          test -s "$ART/hi3798mv310-hg680ka-maxcpus1.dtb"
           test -s "$ART/bl31.bin"
           test -s "$ART/bl31.elf"
-          test -s "$ART/hg680ka-linux-6.18.46-minimal.fip"
+          test -s "$ART/hg680ka-linux-6.18.46-smpdiag.fip"
+          test -s "$ART/hg680ka-linux-6.18.46-maxcpus1.fip"
+          test -s "$ART/0001-arm64-hg680ka-secondary-uart-markers.patch"
 
           grep -F 'CONFIG_SMP=y' "$ART/linux-6.18.46.config"
           grep -F 'CONFIG_ARM_PSCI_FW=y' "$ART/linux-6.18.46.config"
@@ -85,24 +89,30 @@ jobs:
           grep -F 'Entry Point:  00200000' "$RUNNER_TEMP/uimage-info.txt"
           grep -F 'Kernel load address:  0x00200000' "$ART/BUILD-INFO.txt"
 
-          fdtdump "$ART/hi3798mv310-hg680ka-minimal.dtb" > "$RUNNER_TEMP/hg680ka.dts.txt"
-          grep -F 'fiberhome,hg680-ka' "$RUNNER_TEMP/hg680ka.dts.txt"
-          grep -F 'reg = <0x00000000 0x08020000 0x00000000 0x00020000>;' "$RUNNER_TEMP/hg680ka.dts.txt"
-          grep -F 'no-map;' "$RUNNER_TEMP/hg680ka.dts.txt"
-          grep -F 'reg = <0x00000000 0xf8b00000 0x00000000 0x00001000>;' "$RUNNER_TEMP/hg680ka.dts.txt"
+          fdtdump "$ART/hi3798mv310-hg680ka-smpdiag.dtb" > "$RUNNER_TEMP/hg680ka-smp.dts.txt"
+          grep -F 'fiberhome,hg680-ka' "$RUNNER_TEMP/hg680ka-smp.dts.txt"
+          grep -F 'reg = <0x00000000 0x08020000 0x00000000 0x00020000>;' "$RUNNER_TEMP/hg680ka-smp.dts.txt"
+          grep -F 'no-map;' "$RUNNER_TEMP/hg680ka-smp.dts.txt"
+          grep -F 'reg = <0x00000000 0xf8b00000 0x00000000 0x00001000>;' "$RUNNER_TEMP/hg680ka-smp.dts.txt"
+          ! grep -F 'maxcpus=1' "$RUNNER_TEMP/hg680ka-smp.dts.txt"
 
-          grep -F 'EL3 Runtime Firmware BL31' "$ART/FIP-DUMP.txt"
-          grep -F 'Non-Trusted Firmware BL33' "$ART/FIP-DUMP.txt"
+          fdtdump "$ART/hi3798mv310-hg680ka-maxcpus1.dtb" > "$RUNNER_TEMP/hg680ka-max1.dts.txt"
+          grep -F 'maxcpus=1 initcall_debug' "$RUNNER_TEMP/hg680ka-max1.dts.txt"
+
+          grep -F 'EL3 Runtime Firmware BL31' "$ART/FIP-DUMP-smpdiag.txt"
+          grep -F 'Non-Trusted Firmware BL33' "$ART/FIP-DUMP-smpdiag.txt"
+          grep -F 'EL3 Runtime Firmware BL31' "$ART/FIP-DUMP-maxcpus1.txt"
+          grep -F 'Non-Trusted Firmware BL33' "$ART/FIP-DUMP-maxcpus1.txt"
 
           readelf -h "$ART/bl31.elf" | tee "$RUNNER_TEMP/bl31-header.txt"
           grep -E 'Entry point address:[[:space:]]+0x8020000$' "$RUNNER_TEMP/bl31-header.txt"
 
           (cd "$ART" && sha256sum -c SHA256SUMS)
 
-      - name: Upload Linux 6.18 ARM64 bring-up artifacts
+      - name: Upload Linux 6.18 ARM64 diagnostic artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: HG-680-KA-linux-6.18.46-arm64-${{ github.sha }}
+          name: HG-680-KA-linux-6.18.46-arm64-diag-${{ github.sha }}
           path: ${{ runner.temp }}/hg680ka-linux-6.18/artifacts/
           if-no-files-found: error
           compression-level: 0
