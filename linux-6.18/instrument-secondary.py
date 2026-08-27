@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Inject temporary HG680-KA secondary-CPU UART markers into Linux head.S.
 
-This is intentionally a bring-up-only transformation.  Every anchor must match
+This is intentionally a bring-up-only transformation. Every anchor must match
 exactly once so a kernel source change cannot silently instrument the wrong
 place.
 """
@@ -67,13 +67,24 @@ def main() -> None:
         "post __cpu_setup",
     )
 
+    # This is the last point where the physical PL011 address can safely be
+    # used directly. TTBR0/TTBR1 have been loaded, but SCTLR_EL1.M is still 0.
+    # If E prints and the CPU then disappears, the failure is at the MMU/cache
+    # transition or the first instructions executed through the new mappings.
+    text = replace_once(
+        text,
+        '\tload_ttbr1 x1, x1, x3\n\n\tset_sctlr_el1\tx0\n',
+        '\tload_ttbr1 x1, x1, x3\n\n\thg680ka_uart_marker 0x45\n\tset_sctlr_el1\tx0\n',
+        "pre SCTLR_EL1 MMU enable",
+    )
+
     path.write_text(text)
 
-    for marker in ("0x41", "0x42", "0x43", "0x44"):
+    for marker in ("0x41", "0x42", "0x43", "0x44", "0x45"):
         if f"hg680ka_uart_marker {marker}" not in text:
             raise SystemExit(f"failed to insert marker {marker}")
 
-    print(f"instrumented {path} with HG680-KA secondary markers A-D")
+    print(f"instrumented {path} with HG680-KA secondary markers A-E")
 
 
 if __name__ == "__main__":
