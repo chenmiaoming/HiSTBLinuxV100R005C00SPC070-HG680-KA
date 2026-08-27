@@ -1,0 +1,108 @@
+name: Build HG-680-KA Linux 6.18 ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - linux-6.18-bringup
+    paths:
+      - 'linux-6.18/**'
+      - 'scripts/hg680ka/build-linux-6.18-arm64.sh'
+      - 'scripts/hg680ka/build-arm64-atf-smoke.sh'
+      - 'tools/hg680ka/arm64-smoke/**'
+      - 'source/kernel/arm-trusted-firmware/**'
+      - '.github/workflows/build-linux-6.18-arm64.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'linux-6.18/**'
+      - 'scripts/hg680ka/build-linux-6.18-arm64.sh'
+      - 'scripts/hg680ka/build-arm64-atf-smoke.sh'
+      - 'source/kernel/arm-trusted-firmware/**'
+      - '.github/workflows/build-linux-6.18-arm64.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux-6-18-arm64:
+    name: Linux 6.18.46 minimal ARM64 FIP
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout HG-680-KA repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            build-essential \
+            curl \
+            device-tree-compiler \
+            flex \
+            gcc-aarch64-linux-gnu \
+            libelf-dev \
+            libssl-dev \
+            u-boot-tools \
+            xz-utils
+
+      - name: Build Linux 6.18.46 minimal ARM64 FIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/hg680ka/build-linux-6.18-arm64.sh "$RUNNER_TEMP/hg680ka-linux-6.18"
+
+      - name: Verify kernel, DT and FIP invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          ART="$RUNNER_TEMP/hg680ka-linux-6.18/artifacts"
+
+          test -s "$ART/Image-6.18.46"
+          test -s "$ART/Image-6.18.46.uImage"
+          test -s "$ART/hi3798mv310-hg680ka-minimal.dtb"
+          test -s "$ART/bl31.bin"
+          test -s "$ART/bl31.elf"
+          test -s "$ART/hg680ka-linux-6.18.46-minimal.fip"
+
+          grep -F 'CONFIG_SMP=y' "$ART/linux-6.18.46.config"
+          grep -F 'CONFIG_ARM_PSCI_FW=y' "$ART/linux-6.18.46.config"
+          grep -F 'CONFIG_ARM_GIC=y' "$ART/linux-6.18.46.config"
+          grep -F 'CONFIG_SERIAL_AMBA_PL011=y' "$ART/linux-6.18.46.config"
+          grep -F 'CONFIG_SERIAL_AMBA_PL011_CONSOLE=y' "$ART/linux-6.18.46.config"
+          grep -F 'CONFIG_KVM=y' "$ART/linux-6.18.46.config"
+
+          mkimage -l "$ART/Image-6.18.46.uImage" | tee "$RUNNER_TEMP/uimage-info.txt"
+          grep -F 'Image Type:   AArch64 Linux Kernel Image (uncompressed)' "$RUNNER_TEMP/uimage-info.txt"
+          grep -F 'Load Address: 00080000' "$RUNNER_TEMP/uimage-info.txt"
+          grep -F 'Entry Point:  00080000' "$RUNNER_TEMP/uimage-info.txt"
+
+          fdtdump "$ART/hi3798mv310-hg680ka-minimal.dtb" > "$RUNNER_TEMP/hg680ka.dts.txt"
+          grep -F 'fiberhome,hg680-ka' "$RUNNER_TEMP/hg680ka.dts.txt"
+          grep -F 'reg = <0x00000000 0x08020000 0x00000000 0x00020000>;' "$RUNNER_TEMP/hg680ka.dts.txt"
+          grep -F 'no-map;' "$RUNNER_TEMP/hg680ka.dts.txt"
+          grep -F 'reg = <0x00000000 0xf8b00000 0x00000000 0x00001000>;' "$RUNNER_TEMP/hg680ka.dts.txt"
+
+          grep -F 'EL3 Runtime Firmware BL31' "$ART/FIP-DUMP.txt"
+          grep -F 'Non-Trusted Firmware BL33' "$ART/FIP-DUMP.txt"
+
+          readelf -h "$ART/bl31.elf" | tee "$RUNNER_TEMP/bl31-header.txt"
+          grep -E 'Entry point address:[[:space:]]+0x8020000$' "$RUNNER_TEMP/bl31-header.txt"
+
+          (cd "$ART" && sha256sum -c SHA256SUMS)
+
+      - name: Upload Linux 6.18 ARM64 bring-up artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: HG-680-KA-linux-6.18.46-arm64-${{ github.sha }}
+          path: ${{ runner.temp }}/hg680ka-linux-6.18/artifacts/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
