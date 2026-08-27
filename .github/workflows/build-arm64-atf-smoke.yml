@@ -1,0 +1,112 @@
+name: Build HG-680-KA ARM64 TF-A smoke image
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - arm64-atf-bringup
+    paths:
+      - .github/workflows/build-arm64-atf-smoke.yml
+      - scripts/hg680ka/build-arm64-atf-smoke.sh
+      - tools/hg680ka/arm64-smoke/**
+      - source/kernel/arm-trusted-firmware/**
+      - tools/linux/toolchains/aarch64-histbv100-linux/**
+  pull_request:
+    paths:
+      - .github/workflows/build-arm64-atf-smoke.yml
+      - scripts/hg680ka/build-arm64-atf-smoke.sh
+      - tools/hg680ka/arm64-smoke/**
+      - source/kernel/arm-trusted-firmware/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-hg680ka-arm64-atf-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: MV310 TF-A BL31 + position-independent BL33
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout HG-680-KA SDK
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            device-tree-compiler \
+            file \
+            u-boot-tools
+
+      - name: Build ARM64 TF-A handoff smoke image
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/hg680ka/build-arm64-atf-smoke.sh "$RUNNER_TEMP/hg680ka-arm64"
+
+      - name: Verify generated images
+        shell: bash
+        run: |
+          set -euo pipefail
+          ART="$RUNNER_TEMP/hg680ka-arm64/artifacts"
+
+          test -s "$ART/bl31.bin"
+          test -s "$ART/bl31.elf"
+          test -s "$ART/bl33-smoke.elf"
+          test -s "$ART/bl33-smoke.bin"
+          test -s "$ART/bl33-smoke.uImage"
+          test -s "$ART/bl33-smoke.dtb"
+          test -s "$ART/bl33.bin"
+          test -s "$ART/hg680ka-arm64-smoke.fip"
+
+          file "$ART/bl31.elf"
+          readelf -h "$ART/bl31.elf" | tee "$RUNNER_TEMP/bl31-elf-header.txt"
+          grep -F 'Machine:                           AArch64' "$RUNNER_TEMP/bl31-elf-header.txt"
+          grep -E 'Entry point address:[[:space:]]+0x8020000$' "$RUNNER_TEMP/bl31-elf-header.txt"
+
+          file "$ART/bl33-smoke.elf"
+          file "$ART/bl33-smoke.dtb"
+          readelf -h "$ART/bl33-smoke.elf" | grep -F 'AArch64'
+          mkimage -l "$ART/bl33-smoke.uImage" | tee "$RUNNER_TEMP/uimage-info.txt"
+          grep -F 'Load Address: 00080000' "$RUNNER_TEMP/uimage-info.txt"
+          grep -F 'Entry Point:  00080000' "$RUNNER_TEMP/uimage-info.txt"
+          grep -F 'EL3 Runtime Firmware BL31' "$ART/FIP-DUMP.txt"
+          grep -F 'Non-Trusted Firmware BL33' "$ART/FIP-DUMP.txt"
+
+          # The vendor ARM32 load_fip() computes the FDT pointer as
+          # image_get_image_end(hdr) and its libfdt reads struct fdt_header
+          # fields with native 32-bit loads. The first board test aborted with
+          # fdt=0x020071b6, so assert both the payload-relative and final FIP
+          # offsets keep the DTB 8-byte aligned.
+          payload_size=$(stat -c %s "$ART/bl33-smoke.bin")
+          uimage_size=$(stat -c %s "$ART/bl33-smoke.uImage")
+          (( payload_size % 8 == 0 ))
+          (( uimage_size % 8 == 0 ))
+          bl33_off_hex=$(sed -n 's/.*Non-Trusted Firmware BL33: offset=0x\([0-9A-Fa-f]*\).*/\1/p' "$ART/FIP-DUMP.txt")
+          test -n "$bl33_off_hex"
+          bl33_off=$((16#$bl33_off_hex))
+          fdt_off=$((bl33_off + uimage_size))
+          (( fdt_off % 8 == 0 ))
+          printf 'BL33 payload size: %u bytes\n' "$payload_size"
+          printf 'BL33 uImage size:  %u bytes\n' "$uimage_size"
+          printf 'FDT FIP offset:    0x%x (8-byte aligned)\n' "$fdt_off"
+
+          (cd "$ART" && sha256sum -c SHA256SUMS)
+
+      - name: Upload ARM64 handoff artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: HG-680-KA-arm64-atf-smoke-${{ github.sha }}
+          path: ${{ runner.temp }}/hg680ka-arm64/artifacts/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
