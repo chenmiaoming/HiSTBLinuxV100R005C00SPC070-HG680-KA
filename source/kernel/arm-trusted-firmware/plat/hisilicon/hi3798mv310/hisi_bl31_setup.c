@@ -56,7 +56,7 @@ unsigned long __COHERENT_RAM_END__;
 /*
  * The next 2 constants identify the extents of the code & RO data region.
  * These addresses are used by the MMU setup code and therefore they must be
- * page-aligned.  It is the responsibility of the linker script to ensure that
+ * page-aligned. It is the responsibility of the linker script to ensure that
  * __RO_START__ and __RO_END__ linker symbols refer to page-aligned addresses.
  */
 #define BL31_RO_BASE (unsigned long)(&__RO_START__)
@@ -65,7 +65,7 @@ unsigned long __COHERENT_RAM_END__;
 /*
  * The next 2 constants identify the extents of the coherent memory region.
  * These addresses are used by the MMU setup code and therefore they must be
- * page-aligned.  It is the responsibility of the linker script to ensure that
+ * page-aligned. It is the responsibility of the linker script to ensure that
  * __COHERENT_RAM_START__ and __COHERENT_RAM_END__ linker symbols
  * refer to page-aligned addresses.
  */
@@ -112,13 +112,11 @@ void bl31_early_platform_setup(bl31_params_t *from_bl2,
 				void *plat_params_from_bl2)
 {
 
-	/*
-	 * Configure the UART port to be used as the console
-	 */
+	/* Configure the UART port to be used as the console. */
 	console_init(HISI_UART0_BASE, HISI_UART_CLOCK,
 			HISI_BAUDRATE);
 
-	/* Initialise crash console */
+	/* Initialise crash console. */
 	plat_crash_console_init();
 
 #if 1
@@ -142,11 +140,11 @@ void bl31_early_platform_setup(bl31_params_t *from_bl2,
 				NON_SECURE);
 
 		/*
-		 * Factory Fastboot requests EL1 in the BL33 SPSR.  Prefer EL2 when
+		 * Factory Fastboot requests EL1 in the BL33 SPSR. Prefer EL2 when
 		 * the CPU implements it so Linux can retain the virtualization
-		 * extensions.  TF-A context management will set SCR_EL3.HCE for an
+		 * extensions. TF-A context management will set SCR_EL3.HCE for an
 		 * EL2 target, and PSCI will consequently return secondary CPUs to
-		 * EL2 as well.  Keep EL1 as the architectural fallback.
+		 * EL2 as well. Keep EL1 as the architectural fallback.
 		 */
 		if (el2 != ID_AA64PFR0_ELX_NOT_IMPLEMENTED) {
 			bl33_image_ep_info.spsr = SPSR_64(MODE_EL2,
@@ -247,10 +245,6 @@ static void dump_mem(char *phyaddr, uint32_t size)
  ******************************************************************************/
 void bl31_plat_arch_setup(void)
 {
-//#define BL33_LOAD_ADDR 0x80000
-//#define BL33_SIZE 0x2000000
-
-//	uintptr_t bl33_dst = BL33_LOAD_ADDR;
 	uintptr_t fdt = bl33_image_ep_info.args.arg0;
 	uintptr_t bl33_dst = bl33_image_ep_info.args.arg1;
 	uintptr_t bl33_src = bl33_image_ep_info.pc;
@@ -271,7 +265,7 @@ void bl31_plat_arch_setup(void)
 	 *
 	 *     BL33 FIP entry size - sizeof(legacy uImage header)
 	 *
-	 * which includes both the uImage payload and the trailing DTB.  It also
+	 * which includes both the uImage payload and the trailing DTB. It also
 	 * passes arg0 as image_get_image_end(hdr), i.e. the first byte of that DTB.
 	 * Derive the real BL33 payload size from those two source pointers so the
 	 * DTB is not duplicated into the kernel destination at 0x80000.
@@ -288,18 +282,33 @@ void bl31_plat_arch_setup(void)
 	memmove((void *)bl33_dst, (void *)bl33_src, bl33_size);
 	flush_dcache_range(bl33_dst, bl33_size);
 	bl33_image_ep_info.pc = bl33_dst;
+
 	/*
-	  The arm64 kernel require that the device tree blob (dtb) must be placed
-	  on an 8-byte boundary within the first 512 megabytes from the start of
-	  the kernel image and must not cross a 2-megabyte boundary. This is to
-	  allow the kernel to map the blob using a single section mapping in the
-	  initial page tables. To simplify the implemention, we fix the dtb location
-	  to the tail of TAG params area.
-	*/
+	 * The arm64 kernel requires that the device tree blob (DTB) is placed on
+	 * an 8-byte boundary within the first 512 MiB from the start of the kernel
+	 * image. Keep the vendor fixed destination at the end of the boot-parameter
+	 * area, which is 0x10100 on this board.
+	 */
 	INFO("Move dtb from 0x%lx to 0x%lx, %lu Bytes\n",
 		fdt, atags_end, (unsigned long)fdt_max_size);
 	memmove((void *)atags_end, (const void *)fdt, fdt_max_size);
 	flush_dcache_range(atags_end, fdt_max_size);
+
+	/*
+	 * Linux arm64 boot ABI:
+	 *   x0 = physical address of the DTB
+	 *   x1 = 0
+	 *   x2 = 0
+	 *   x3 = 0
+	 *
+	 * Factory Fastboot used x1-x3 internally to pass the relocation address,
+	 * size and boot-parameter base to BL31. They must not leak into Linux.
+	 */
 	bl33_image_ep_info.args.arg0 = atags_end;
+	bl33_image_ep_info.args.arg1 = 0;
+	bl33_image_ep_info.args.arg2 = 0;
+	bl33_image_ep_info.args.arg3 = 0;
+
+	INFO("Linux BL33 args: x0=0x%lx, x1=x2=x3=0\n", atags_end);
 }
 
