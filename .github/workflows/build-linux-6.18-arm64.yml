@@ -81,8 +81,9 @@ jobs:
 
           mkimage -l "$ART/Image-6.18.46.uImage" | tee "$RUNNER_TEMP/uimage-info.txt"
           grep -F 'Image Type:   AArch64 Linux Kernel Image (uncompressed)' "$RUNNER_TEMP/uimage-info.txt"
-          grep -F 'Load Address: 00080000' "$RUNNER_TEMP/uimage-info.txt"
-          grep -F 'Entry Point:  00080000' "$RUNNER_TEMP/uimage-info.txt"
+          grep -F 'Load Address: 00200000' "$RUNNER_TEMP/uimage-info.txt"
+          grep -F 'Entry Point:  00200000' "$RUNNER_TEMP/uimage-info.txt"
+          grep -F 'Kernel load address:  0x00200000' "$ART/BUILD-INFO.txt"
 
           fdtdump "$ART/hi3798mv310-hg680ka-minimal.dtb" > "$RUNNER_TEMP/hg680ka.dts.txt"
           grep -F 'fiberhome,hg680-ka' "$RUNNER_TEMP/hg680ka.dts.txt"
