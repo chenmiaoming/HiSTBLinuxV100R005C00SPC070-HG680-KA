@@ -64,18 +64,26 @@ grep -F 'hg680ka_uart_marker 0x45' "$SRC/arch/arm64/kernel/head.S"
 printf 'Building Linux %s ARM64 defconfig...\n' "$LINUX_VERSION"
 make -C "$SRC" O="$KOUT" ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" defconfig
 
-# Keep the diagnostic kernel config unchanged while isolating the SMP failure.
-# Once low-level SMP is stable this generic config will be replaced by the
-# board-specific hg680ka_arm64_minimal_defconfig.
+# Keep the diagnostic kernel close to generic defconfig while isolating the SMP
+# failure.  The generic arm64 defconfig currently selects 52-bit VA, but this
+# Cortex-A53 only implements the 48-bit VA architecture.  A 52-bit build relies
+# on an alternatives patch in secondary_startup; if a secondary observes stale
+# I-cache it can execute the original __cpu_secondary_check52bitva() call and
+# deliberately park forever.  Use the native 48-bit VA configuration for this
+# 1 GiB A53 board so that path is not emitted at all.
 "$SRC/scripts/config" --file "$KOUT/.config" \
 	-e SMP \
 	-e ARM_PSCI_FW \
 	-e ARM_GIC \
 	-e SERIAL_AMBA_PL011 \
 	-e SERIAL_AMBA_PL011_CONSOLE \
-	-e KVM
+	-e KVM \
+	-d ARM64_VA_BITS_52 \
+	-e ARM64_VA_BITS_48
 
 make -C "$SRC" O="$KOUT" ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+grep -F 'CONFIG_ARM64_VA_BITS_48=y' "$KOUT/.config"
+grep -F '# CONFIG_ARM64_VA_BITS_52 is not set' "$KOUT/.config"
 make -C "$SRC" O="$KOUT" ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" \
 	-j"$(nproc)" Image
 
