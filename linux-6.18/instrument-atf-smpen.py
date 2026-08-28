@@ -4,7 +4,11 @@
 Keep this diagnostic deliberately primitive: the secondary CPU is in TF-A's
 PSCI power-on completion path while CPU0 is already running Linux. Using the
 TF-A INFO()/console machinery here can perturb the path we are trying to
-observe, so emit single characters directly to the PL011 data register.
+observe, so emit characters directly to PL011.
+
+Raw DR writes are not safe when markers are emitted back-to-back: PL011 has a
+small TX FIFO and a full FIFO can perturb or stall the path under test. Every
+character therefore waits for UARTFR.TXFF (bit 5) to clear before writing DR.
 
 Output for the first secondary is expected to look like:
 
@@ -38,10 +42,10 @@ def main() -> None:
             f"hisi_pwr_domain_on_finish anchor: expected exactly one match, found {text.count(anchor)}"
         )
 
-    injected = """void hisi_pwr_domain_on_finish(const psci_power_state_t *target_state)\n{\n#if DISABLE_TEE == 0\n\tuint64_t cpuectlr;\n\n\t/* HG680-KA SMPEN diagnostic. Do not use INFO()/console locks here: CPU0\n\t * is already in Linux while this secondary is completing PSCI CPU_ON. */\n\t__asm volatile(\"mrs %0, S3_1_C15_C2_1\" : \"=r\" (cpuectlr));\n\twritel('S', HISI_UART0_BASE);\n\twritel((cpuectlr & (1ULL << 6)) ? '1' : '0', HISI_UART0_BASE);\n\twritel(' ', HISI_UART0_BASE);\n\n\t/* F/G/H bracket the two GICv2 per-CPU setup calls. */\n\twritel('F', HISI_UART0_BASE);\n\twritel(' ', HISI_UART0_BASE);\n\tarm_gic_cpuif_setup();\n\twritel('G', HISI_UART0_BASE);\n\twritel(' ', HISI_UART0_BASE);\n\tarm_gic_pcpu_distif_setup();\n\twritel('H', HISI_UART0_BASE);\n\twritel(' ', HISI_UART0_BASE);\n"""
+    injected = """void hisi_pwr_domain_on_finish(const psci_power_state_t *target_state)\n{\n#if DISABLE_TEE == 0\n\tuint64_t cpuectlr;\n\n\t/* HG680-KA SMPEN diagnostic. Do not use INFO()/console locks here: CPU0\n\t * is already in Linux while this secondary is completing PSCI CPU_ON.\n\t * Poll PL011 UARTFR.TXFF before every DR write so the marker itself can\n\t * never fill the TX FIFO and stall the path under test. */\n#define HG680KA_DIAG_PUTC(ch) do { \\\n\twhile (readl(HISI_UART0_BASE + 0x18) & (1U << 5)) \\\n\t\t; \\\n\twritel((ch), HISI_UART0_BASE); \\\n} while (0)\n\n\t__asm volatile(\"mrs %0, S3_1_C15_C2_1\" : \"=r\" (cpuectlr));\n\tHG680KA_DIAG_PUTC('S');\n\tHG680KA_DIAG_PUTC((cpuectlr & (1ULL << 6)) ? '1' : '0');\n\tHG680KA_DIAG_PUTC(' ');\n\n\t/* F/G/H bracket the two GICv2 per-CPU setup calls. */\n\tHG680KA_DIAG_PUTC('F');\n\tHG680KA_DIAG_PUTC(' ');\n\tarm_gic_cpuif_setup();\n\tHG680KA_DIAG_PUTC('G');\n\tHG680KA_DIAG_PUTC(' ');\n\tarm_gic_pcpu_distif_setup();\n\tHG680KA_DIAG_PUTC('H');\n\tHG680KA_DIAG_PUTC(' ');\n\n#undef HG680KA_DIAG_PUTC\n"""
 
     path.write_text(text.replace(anchor, injected, 1))
-    print(f"instrumented {path} with lock-free SMPEN/GIC diagnostics")
+    print(f"instrumented {path} with FIFO-safe SMPEN/GIC diagnostics")
 
 
 if __name__ == "__main__":
