@@ -32,10 +32,17 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - name: Checkout HG-680-KA repository
+      - name: Checkout HG-680-KA bring-up inputs
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
+          sparse-checkout: |
+            .github
+            linux-6.18
+            scripts/hg680ka
+            tools/hg680ka
+            source/kernel/arm-trusted-firmware
+          sparse-checkout-cone-mode: true
 
       - name: Install build dependencies
         run: |
@@ -84,6 +91,9 @@ jobs:
           grep -F 'CONFIG_ARM_PSCI_FW=y' "$ART/linux-6.18.46.config"
           grep -F 'CONFIG_ARM_GIC=y' "$ART/linux-6.18.46.config"
           grep -F 'CONFIG_PRINTK=y' "$ART/linux-6.18.46.config"
+          grep -F 'CONFIG_TTY=y' "$ART/linux-6.18.46.config"
+          grep -F 'CONFIG_ARM_AMBA=y' "$ART/linux-6.18.46.config"
+          grep -F 'CONFIG_SERIAL_CORE=y' "$ART/linux-6.18.46.config"
           grep -F 'CONFIG_SERIAL_EARLYCON=y' "$ART/linux-6.18.46.config"
           grep -F 'CONFIG_SERIAL_AMBA_PL011=y' "$ART/linux-6.18.46.config"
           grep -F 'CONFIG_SERIAL_AMBA_PL011_CONSOLE=y' "$ART/linux-6.18.46.config"
