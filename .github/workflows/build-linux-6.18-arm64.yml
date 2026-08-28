@@ -29,7 +29,7 @@ jobs:
   build-linux-6-18-arm64:
     name: Linux 6.18.46 ARM64 SMP diagnostics
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 45
 
     steps:
       - name: Checkout HG-680-KA repository
@@ -54,10 +54,12 @@ jobs:
             u-boot-tools \
             xz-utils
 
-      - name: Build Linux 6.18.46 diagnostic FIPs
+      - name: Build Linux 6.18.46 diagnostic FIP
         shell: bash
         run: |
           set -euo pipefail
+          echo "runner nproc=$(nproc)"
+          lscpu | grep -E '^(CPU\(s\)|Model name|Thread|Core|Socket)' || true
           bash scripts/hg680ka/build-linux-6.18-arm64.sh "$RUNNER_TEMP/hg680ka-linux-6.18"
 
       - name: Verify kernel, DT and FIP invariants
@@ -69,19 +71,32 @@ jobs:
           test -s "$ART/Image-6.18.46"
           test -s "$ART/Image-6.18.46.uImage"
           test -s "$ART/hi3798mv310-hg680ka-smpdiag.dtb"
-          test -s "$ART/hi3798mv310-hg680ka-maxcpus1.dtb"
           test -s "$ART/bl31.bin"
           test -s "$ART/bl31.elf"
           test -s "$ART/hg680ka-linux-6.18.46-smpdiag.fip"
-          test -s "$ART/hg680ka-linux-6.18.46-maxcpus1.fip"
           test -s "$ART/instrument-secondary.py"
+          test -s "$ART/instrument-atf-smpen.py"
+          test -s "$ART/EARLY-SMP-SYMBOLS.txt"
+          test -s "$ART/EARLY-SMP-DISASM.txt"
 
           grep -F 'CONFIG_SMP=y' "$ART/linux-6.18.46.config"
+          grep -F 'CONFIG_NR_CPUS=4' "$ART/linux-6.18.46.config"
           grep -F 'CONFIG_ARM_PSCI_FW=y' "$ART/linux-6.18.46.config"
           grep -F 'CONFIG_ARM_GIC=y' "$ART/linux-6.18.46.config"
+          grep -F 'CONFIG_PRINTK=y' "$ART/linux-6.18.46.config"
+          grep -F 'CONFIG_SERIAL_EARLYCON=y' "$ART/linux-6.18.46.config"
           grep -F 'CONFIG_SERIAL_AMBA_PL011=y' "$ART/linux-6.18.46.config"
           grep -F 'CONFIG_SERIAL_AMBA_PL011_CONSOLE=y' "$ART/linux-6.18.46.config"
-          grep -F 'CONFIG_KVM=y' "$ART/linux-6.18.46.config"
+          grep -F 'CONFIG_ARM64_VA_BITS_48=y' "$ART/linux-6.18.46.config"
+          grep -F '# CONFIG_ARM64_VA_BITS_52 is not set' "$ART/linux-6.18.46.config"
+          grep -F 'CONFIG_ARM64_ERRATUM_845719=y' "$ART/linux-6.18.46.config"
+          grep -F '# CONFIG_KVM is not set' "$ART/linux-6.18.46.config"
+          grep -F '# CONFIG_MODULES is not set' "$ART/linux-6.18.46.config"
+
+          grep -F 'secondary_entry' "$ART/EARLY-SMP-SYMBOLS.txt"
+          grep -F 'secondary_startup' "$ART/EARLY-SMP-SYMBOLS.txt"
+          grep -F '__cpu_setup' "$ART/EARLY-SMP-SYMBOLS.txt"
+          grep -F '__enable_mmu' "$ART/EARLY-SMP-SYMBOLS.txt"
 
           mkimage -l "$ART/Image-6.18.46.uImage" | tee "$RUNNER_TEMP/uimage-info.txt"
           grep -F 'Image Type:   AArch64 Linux Kernel Image (uncompressed)' "$RUNNER_TEMP/uimage-info.txt"
@@ -96,13 +111,8 @@ jobs:
           grep -F 'reg = <0x00000000 0xf8b00000 0x00000000 0x00001000>;' "$RUNNER_TEMP/hg680ka-smp.dts.txt"
           ! grep -F 'maxcpus=1' "$RUNNER_TEMP/hg680ka-smp.dts.txt"
 
-          fdtdump "$ART/hi3798mv310-hg680ka-maxcpus1.dtb" > "$RUNNER_TEMP/hg680ka-max1.dts.txt"
-          grep -F 'maxcpus=1 initcall_debug' "$RUNNER_TEMP/hg680ka-max1.dts.txt"
-
           grep -F 'EL3 Runtime Firmware BL31' "$ART/FIP-DUMP-smpdiag.txt"
           grep -F 'Non-Trusted Firmware BL33' "$ART/FIP-DUMP-smpdiag.txt"
-          grep -F 'EL3 Runtime Firmware BL31' "$ART/FIP-DUMP-maxcpus1.txt"
-          grep -F 'Non-Trusted Firmware BL33' "$ART/FIP-DUMP-maxcpus1.txt"
 
           readelf -h "$ART/bl31.elf" | tee "$RUNNER_TEMP/bl31-header.txt"
           grep -E 'Entry point address:[[:space:]]+0x8020000$' "$RUNNER_TEMP/bl31-header.txt"
