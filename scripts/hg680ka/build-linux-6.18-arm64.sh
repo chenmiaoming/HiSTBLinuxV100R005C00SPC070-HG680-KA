@@ -77,7 +77,8 @@ make -C "$SRC" O="$KOUT" ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" tinyconfig
 	-e ARM_PSCI_FW \
 	-e ARM_GIC \
 	-e PRINTK \
-	-e SERIAL_EARLYCON \
+	-e TTY \
+	-e ARM_AMBA \
 	-e SERIAL_AMBA_PL011 \
 	-e SERIAL_AMBA_PL011_CONSOLE \
 	-e ARM64_ERRATUM_845719 \
@@ -98,6 +99,9 @@ grep -F 'CONFIG_NR_CPUS=4' "$KOUT/.config"
 grep -F 'CONFIG_ARM_PSCI_FW=y' "$KOUT/.config"
 grep -F 'CONFIG_ARM_GIC=y' "$KOUT/.config"
 grep -F 'CONFIG_PRINTK=y' "$KOUT/.config"
+grep -F 'CONFIG_TTY=y' "$KOUT/.config"
+grep -F 'CONFIG_ARM_AMBA=y' "$KOUT/.config"
+grep -F 'CONFIG_SERIAL_CORE=y' "$KOUT/.config"
 grep -F 'CONFIG_SERIAL_EARLYCON=y' "$KOUT/.config"
 grep -F 'CONFIG_SERIAL_AMBA_PL011=y' "$KOUT/.config"
 grep -F 'CONFIG_SERIAL_AMBA_PL011_CONSOLE=y' "$KOUT/.config"
