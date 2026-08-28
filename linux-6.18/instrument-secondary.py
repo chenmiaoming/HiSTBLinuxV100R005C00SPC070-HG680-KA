@@ -4,6 +4,10 @@
 This is intentionally a bring-up-only transformation. Every anchor must match
 exactly once so a kernel source change cannot silently instrument the wrong
 place.
+
+PL011 marker writes poll UARTFR.TXFF before every UARTDR access. Without this,
+back-to-back early markers can fill the small TX FIFO and perturb the exact
+secondary path being measured.
 """
 
 from pathlib import Path
@@ -21,16 +25,23 @@ def instrument_head(path: Path) -> None:
     text = path.read_text()
 
     macro = r'''
-/* HG680-KA temporary secondary CPU bring-up marker. */
+/* HG680-KA temporary secondary CPU bring-up marker.
+ * Poll PL011 UARTFR.TXFF (bit 5) before every UARTDR write. */
 	.macro	hg680ka_uart_marker, ch
 	movz	x9, #0xf8b0, lsl #16
+1:	ldr	w11, [x9, #0x18]
+	tbnz	w11, #5, 1b
 	mov	w10, #\ch
 	str	w10, [x9]
 	mrs	x10, mpidr_el1
 	and	w10, w10, #0xff
 	add	w10, w10, #'0'
+2:	ldr	w11, [x9, #0x18]
+	tbnz	w11, #5, 2b
 	str	w10, [x9]
 	mov	w10, #' '
+3:	ldr	w11, [x9, #0x18]
+	tbnz	w11, #5, 3b
 	str	w10, [x9]
 	.endm
 '''
@@ -71,19 +82,25 @@ def instrument_proc(path: Path) -> None:
     text = path.read_text()
 
     # __cpu_setup uses x15/x16/x17 for TCR/MAIR and explicit x1/x5/x6/x9
-    # temporaries. x10/x11 are not live anywhere in this function, so use them
-    # for diagnostics to avoid perturbing values being prepared for MMU-on.
+    # temporaries. x10-x12 are not live here, so reserve them for the marker.
     macro = r'''
-/* HG680-KA temporary __cpu_setup marker; x10/x11 are scratch here. */
+/* HG680-KA temporary __cpu_setup marker; x10-x12 are scratch here.
+ * Poll PL011 UARTFR.TXFF (bit 5) before every UARTDR write. */
 	.macro	hg680ka_setup_marker, ch
 	movz	x10, #0xf8b0, lsl #16
+1:	ldr	w12, [x10, #0x18]
+	tbnz	w12, #5, 1b
 	mov	w11, #\ch
 	str	w11, [x10]
 	mrs	x11, mpidr_el1
 	and	w11, w11, #0xff
 	add	w11, w11, #'0'
+2:	ldr	w12, [x10, #0x18]
+	tbnz	w12, #5, 2b
 	str	w11, [x10]
 	mov	w11, #' '
+3:	ldr	w12, [x10, #0x18]
+	tbnz	w12, #5, 3b
 	str	w11, [x10]
 	.endm
 '''
@@ -144,8 +161,8 @@ def main() -> None:
 
     instrument_head(head)
     instrument_proc(proc)
-    print(f"instrumented {head} with HG680-KA secondary markers A-E/P")
-    print(f"instrumented {proc} with HG680-KA __cpu_setup markers U-Z")
+    print(f"instrumented {head} with FIFO-safe HG680-KA secondary markers A-E/P")
+    print(f"instrumented {proc} with FIFO-safe HG680-KA __cpu_setup markers U-Z")
 
 
 if __name__ == "__main__":
