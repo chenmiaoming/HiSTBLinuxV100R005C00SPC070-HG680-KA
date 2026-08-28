@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inject temporary HG680-KA secondary-CPU UART markers into Linux head.S.
+"""Inject temporary HG680-KA secondary-CPU UART markers into Linux arm64.
 
 This is intentionally a bring-up-only transformation. Every anchor must match
 exactly once so a kernel source change cannot silently instrument the wrong
@@ -17,11 +17,7 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
-def main() -> None:
-    if len(sys.argv) != 2:
-        raise SystemExit(f"usage: {sys.argv[0]} <arch/arm64/kernel/head.S>")
-
-    path = Path(sys.argv[1])
+def instrument_head(path: Path) -> None:
     text = path.read_text()
 
     macro = r'''
@@ -43,7 +39,7 @@ def main() -> None:
         text,
         '#include "efi-header.S"\n',
         '#include "efi-header.S"\n' + macro,
-        "marker macro",
+        "head marker macro",
     )
 
     text = replace_once(
@@ -67,10 +63,8 @@ def main() -> None:
         "post __cpu_setup",
     )
 
-    # This is the last point where the physical PL011 address can safely be
-    # used directly. TTBR0/TTBR1 have been loaded, but SCTLR_EL1.M is still 0.
-    # If E prints and the CPU then disappears, the failure is at the MMU/cache
-    # transition or the first instructions executed through the new mappings.
+    # Last point where the physical PL011 address can safely be used directly.
+    # TTBR0/TTBR1 are loaded, but SCTLR_EL1.M is still clear.
     text = replace_once(
         text,
         '\tload_ttbr1 x1, x1, x3\n\n\tset_sctlr_el1\tx0\n',
@@ -82,9 +76,98 @@ def main() -> None:
 
     for marker in ("0x41", "0x42", "0x43", "0x44", "0x45"):
         if f"hg680ka_uart_marker {marker}" not in text:
-            raise SystemExit(f"failed to insert marker {marker}")
+            raise SystemExit(f"failed to insert head marker {marker}")
 
-    print(f"instrumented {path} with HG680-KA secondary markers A-E")
+
+def instrument_proc(path: Path) -> None:
+    text = path.read_text()
+
+    # __cpu_setup uses x15/x16/x17 for TCR/MAIR and explicit x1/x5/x6/x9
+    # temporaries. x10/x11 are not live anywhere in this function, so use them
+    # for diagnostics to avoid perturbing the values being prepared for MMU-on.
+    macro = r'''
+/* HG680-KA temporary __cpu_setup marker; x10/x11 are scratch here. */
+	.macro	hg680ka_setup_marker, ch
+	movz	x10, #0xf8b0, lsl #16
+	mov	w11, #\ch
+	str	w11, [x10]
+	mrs	x11, mpidr_el1
+	and	w11, w11, #0xff
+	add	w11, w11, #'0'
+	str	w11, [x10]
+	mov	w11, #' '
+	str	w11, [x10]
+	.endm
+'''
+
+    text = replace_once(
+        text,
+        '#include <asm/sysreg.h>\n',
+        '#include <asm/sysreg.h>\n' + macro,
+        "proc marker macro",
+    )
+
+    text = replace_once(
+        text,
+        'SYM_FUNC_START(__cpu_setup)\n\ttlbi\tvmalle1\t\t\t\t// Invalidate local TLB\n',
+        'SYM_FUNC_START(__cpu_setup)\n\thg680ka_setup_marker 0x55\n\ttlbi\tvmalle1\t\t\t\t// Invalidate local TLB\n',
+        "__cpu_setup entry",
+    )
+
+    text = replace_once(
+        text,
+        '\treset_amuserenr_el0 x1\t\t\t// Disable AMU access from EL0\n\n\t/*\n\t * Default values for VMSA control registers.',
+        '\treset_amuserenr_el0 x1\t\t\t// Disable AMU access from EL0\n\thg680ka_setup_marker 0x56\n\n\t/*\n\t * Default values for VMSA control registers.',
+        "post basic system-register reset",
+    )
+
+    text = replace_once(
+        text,
+        '#endif\t/* CONFIG_ARM64_HW_AFDBM */\n\tmsr\tmair_el1, mair\n',
+        '#endif\t/* CONFIG_ARM64_HW_AFDBM */\n\thg680ka_setup_marker 0x57\n\tmsr\tmair_el1, mair\n',
+        "pre MAIR/TCR",
+    )
+
+    text = replace_once(
+        text,
+        '\tmsr\tmair_el1, mair\n\tmsr\ttcr_el1, tcr\n\n\tmrs_s\tx1, SYS_ID_AA64MMFR3_EL1\n',
+        '\tmsr\tmair_el1, mair\n\tmsr\ttcr_el1, tcr\n\thg680ka_setup_marker 0x58\n\n\tmrs_s\tx1, SYS_ID_AA64MMFR3_EL1\n',
+        "post MAIR/TCR",
+    )
+
+    text = replace_once(
+        text,
+        '.Lskip_indirection:\n\n\tmrs_s\tx1, SYS_ID_AA64MMFR3_EL1\n',
+        '.Lskip_indirection:\n\thg680ka_setup_marker 0x59\n\n\tmrs_s\tx1, SYS_ID_AA64MMFR3_EL1\n',
+        "post PIE feature setup",
+    )
+
+    text = replace_once(
+        text,
+        '\tmsr\tREG_TCR2_EL1, tcr2\n1:\n\n\t/*\n\t * Prepare SCTLR\n',
+        '\tmsr\tREG_TCR2_EL1, tcr2\n1:\n\thg680ka_setup_marker 0x5a\n\n\t/*\n\t * Prepare SCTLR\n',
+        "pre SCTLR value preparation",
+    )
+
+    path.write_text(text)
+
+    for marker in ("0x55", "0x56", "0x57", "0x58", "0x59", "0x5a"):
+        if f"hg680ka_setup_marker {marker}" not in text:
+            raise SystemExit(f"failed to insert __cpu_setup marker {marker}")
+
+
+def main() -> None:
+    if len(sys.argv) != 3:
+        raise SystemExit(
+            f"usage: {sys.argv[0]} <arch/arm64/kernel/head.S> <arch/arm64/mm/proc.S>"
+        )
+
+    head = Path(sys.argv[1])
+    proc = Path(sys.argv[2])
+    instrument_head(head)
+    instrument_proc(proc)
+    print(f"instrumented {head} with HG680-KA secondary markers A-E")
+    print(f"instrumented {proc} with HG680-KA __cpu_setup markers U-Z")
 
 
 if __name__ == "__main__":
