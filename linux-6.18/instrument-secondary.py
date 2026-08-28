@@ -51,8 +51,8 @@ def instrument_head(path: Path) -> None:
     text = replace_once(
         text,
         '\tbl\t__cpu_setup\t\t\t// initialise processor\n\tadrp\tx1, swapper_pg_dir\n',
-        '\tbl\t__cpu_setup\t\t\t// initialise processor\n\thg680ka_uart_marker 0x44\n\tadrp\tx1, swapper_pg_dir\n',
-        "post __cpu_setup",
+        '\thg680ka_uart_marker 0x50\n\tbl\t__cpu_setup\t\t\t// initialise processor\n\thg680ka_uart_marker 0x44\n\tadrp\tx1, swapper_pg_dir\n',
+        "call __cpu_setup",
     )
     text = replace_once(
         text,
@@ -62,7 +62,7 @@ def instrument_head(path: Path) -> None:
     )
     path.write_text(text)
 
-    for marker in ("0x41", "0x42", "0x43", "0x44", "0x45"):
+    for marker in ("0x41", "0x42", "0x43", "0x50", "0x44", "0x45"):
         if f"hg680ka_uart_marker {marker}" not in text:
             raise SystemExit(f"failed to insert head marker {marker}")
 
@@ -144,7 +144,7 @@ def main() -> None:
 
     instrument_head(head)
     instrument_proc(proc)
-    print(f"instrumented {head} with HG680-KA secondary markers A-E")
+    print(f"instrumented {head} with HG680-KA secondary markers A-E/P")
     print(f"instrumented {proc} with HG680-KA __cpu_setup markers U-Z")
 
 
