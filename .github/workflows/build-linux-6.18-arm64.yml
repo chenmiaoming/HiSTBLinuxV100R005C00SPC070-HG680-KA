@@ -41,6 +41,7 @@ jobs:
             linux-6.18
             scripts/hg680ka
             tools/hg680ka
+            tools/linux/toolchains/aarch64-histbv100-linux
             source/kernel/arm-trusted-firmware
           sparse-checkout-cone-mode: true
 
@@ -99,7 +100,7 @@ jobs:
           grep -F 'CONFIG_SERIAL_AMBA_PL011_CONSOLE=y' "$ART/linux-6.18.46.config"
           grep -F 'CONFIG_ARM64_VA_BITS_48=y' "$ART/linux-6.18.46.config"
           grep -F '# CONFIG_ARM64_VA_BITS_52 is not set' "$ART/linux-6.18.46.config"
-          grep -F 'CONFIG_ARM64_ERRATUM_845719=y' "$ART/linux-6.18.46.config"
+          grep -F 'CONFIG_ARM64_ERRATUM_843419=y' "$ART/linux-6.18.46.config"
           grep -F '# CONFIG_KVM is not set' "$ART/linux-6.18.46.config"
           grep -F '# CONFIG_MODULES is not set' "$ART/linux-6.18.46.config"
 
