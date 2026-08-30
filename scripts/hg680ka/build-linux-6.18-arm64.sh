@@ -81,7 +81,7 @@ make -C "$SRC" O="$KOUT" ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" tinyconfig
 	-e ARM_AMBA \
 	-e SERIAL_AMBA_PL011 \
 	-e SERIAL_AMBA_PL011_CONSOLE \
-	-e ARM64_ERRATUM_845719 \
+	-e ARM64_ERRATUM_843419 \
 	-e ARM64_4K_PAGES \
 	-d ARM64_VA_BITS_52 \
 	-e ARM64_VA_BITS_48 \
@@ -107,7 +107,7 @@ grep -F 'CONFIG_SERIAL_AMBA_PL011=y' "$KOUT/.config"
 grep -F 'CONFIG_SERIAL_AMBA_PL011_CONSOLE=y' "$KOUT/.config"
 grep -F 'CONFIG_ARM64_VA_BITS_48=y' "$KOUT/.config"
 grep -F '# CONFIG_ARM64_VA_BITS_52 is not set' "$KOUT/.config"
-grep -F 'CONFIG_ARM64_ERRATUM_845719=y' "$KOUT/.config"
+grep -F 'CONFIG_ARM64_ERRATUM_843419=y' "$KOUT/.config"
 
 JOBS="$(nproc)"
 printf 'Compiling Image with make -j%s\n' "$JOBS"
