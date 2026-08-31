@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """Inject temporary HG680-KA secondary-CPU diagnostics into Linux arm64.
 
-This revision is intentionally a single-question probe. The previous test
-observed M1 from inside __enable_mmu(), proving CPU1 can enable stage-1 MMU,
-execute the complete set_sctlr_el1() sequence in .idmap.text, disable the MMU
-again, and continue executing.
+This revision is a high-VA instruction-fetch probe. The previous R1 test proved
+CPU1 can enable stage-1 translation in __enable_mmu(), return normally to the
+identity-mapped secondary_startup continuation, disable translation again, and
+continue executing.
 
-The subsequent high-VA breadcrumb experiment stopped at E1 and also stopped
-CPU0's visible progress, so that breadcrumb was not a passive observer. This
-probe removes every post-MMU memory access. Immediately after the normal
-`bl __enable_mmu` returns, CPU1 disables SCTLR_EL1.M while still executing from
-.idmap.text, prints R<cpu> through the physical PL011, and parks. Seeing R1
-therefore proves the normal return from __enable_mmu() is good. No R1 narrows
-the failure to the return boundary itself.
+To isolate TTBR1/kernel-VA instruction fetch from every data-memory access, this
+probe keeps the MMU enabled after __enable_mmu(), loads the address of a tiny
+trampoline placed in normal .text, and branches to it. The trampoline performs
+only `br x9`, where x9 already contains an identity-mapped continuation address.
+Back in .idmap.text the probe disables the MMU, prints J<cpu> via the physical
+PL011, and parks. Seeing J1 proves CPU1 can fetch and execute normal high-VA
+kernel text through TTBR1 and return to the idmap without touching kernel data.
 """
 
 from pathlib import Path
@@ -82,26 +82,50 @@ def instrument_head(path: Path) -> None:
 \thg680ka_uart_marker 0x45
 \tbl\t__enable_mmu
 
-\t/* One-shot return probe. LR from the BL points at the identity-mapped
-\t * continuation. Do not touch post-MMU data or MMIO. Turn translation
-\t * back off first, then use the physical UART and park deliberately. */
+\t/* High-VA instruction-fetch probe. x9 is prepared while executing from
+\t * the identity map and remains a low VA valid through TTBR0. The target
+\t * trampoline lives in normal .text and executes only `br x9`, so no
+\t * post-MMU data access is introduced by the diagnostic itself. */
+\tadr\tx9, 997f
+\tldr\tx8, =hg680ka_highva_probe
+\tbr\tx8
+997:
+\t/* Reaching this label proves the high-VA trampoline executed. Disable
+\t * translation before touching the physical PL011. */
 \tmrs\tx12, sctlr_el1
 \tbic\tx12, x12, #SCTLR_ELx_M
 \tpre_disable_mmu_workaround
 \tmsr\tsctlr_el1, x12
 \tisb
-\thg680ka_uart_marker 0x52
+\thg680ka_uart_marker 0x4a
 998:\twfe
 \tb\t998b
 ''',
-        "post __enable_mmu return probe",
+        "high-VA instruction-fetch probe",
+    )
+
+    text = replace_once(
+        text,
+        '\t.text\nSYM_FUNC_START_LOCAL(__secondary_switched)\n',
+        '''\t.text
+/* HG680-KA high-VA instruction-fetch trampoline. It deliberately performs no
+ * memory access; x9 contains an identity-mapped continuation address. */
+SYM_FUNC_START_LOCAL(hg680ka_highva_probe)
+\tbr\tx9
+SYM_FUNC_END(hg680ka_highva_probe)
+
+SYM_FUNC_START_LOCAL(__secondary_switched)
+''',
+        "high-VA trampoline",
     )
 
     path.write_text(text)
 
-    for marker in ("0x41", "0x42", "0x43", "0x50", "0x44", "0x45", "0x52"):
+    for marker in ("0x41", "0x42", "0x43", "0x50", "0x44", "0x45", "0x4a"):
         if f"hg680ka_uart_marker {marker}" not in text:
             raise SystemExit(f"failed to insert head marker {marker}")
+    if "SYM_FUNC_START_LOCAL(hg680ka_highva_probe)" not in text:
+        raise SystemExit("failed to insert high-VA trampoline")
 
 
 def instrument_proc(path: Path) -> None:
@@ -177,7 +201,7 @@ def main() -> None:
     instrument_head(head)
     instrument_proc(proc)
 
-    print(f"instrumented {head} with HG680-KA __enable_mmu return probe R")
+    print(f"instrumented {head} with HG680-KA high-VA instruction-fetch probe J")
     print(f"instrumented {proc} with HG680-KA __cpu_setup markers U-Z")
 
 
