@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
-"""Instrument HG680-KA arm64 secondary bring-up with an early fault catcher.
+"""Instrument HG680-KA arm64 secondary bring-up with a compact sync catcher.
 
-The board tests have already proved that CPU1 reaches __cpu_setup(), enables
-stage-1 translation, returns from __enable_mmu(), and can fetch/execute normal
-TTBR1 kernel text.  The remaining failure is therefore after the branch to
+Board tests have already proved that CPU1 reaches __cpu_setup(), enables stage-1
+translation, returns from __enable_mmu(), and can fetch/execute normal TTBR1
+kernel text.  The remaining failure is after the branch to
 __secondary_switched.
 
-This diagnostic stops adding post-MMU memory breadcrumbs.  Instead it installs
-a 2 KiB-aligned, stackless EL1 vector table in .idmap.text before jumping to
-high VA.  Any early synchronous exception can then return to the identity map,
-disable translation, and print ESR_EL1/ELR_EL1/FAR_EL1 through the physical
-PL011 without depending on kernel mappings or a stack.
+This diagnostic installs a 2 KiB-aligned, stackless EL1 synchronous-exception
+catcher while TTBR0 still maps .idmap.text.  Only the Current-EL-with-SPx sync
+slot at VBAR+0x200 is emitted; IRQ/FIQ/SError remain masked during this early
+path.  This keeps the whole arm64 idmap within its mandatory single 4 KiB page.
+If a synchronous exception occurs before a secondary stack exists, the catcher
+reads ESR_EL1/ELR_EL1/FAR_EL1, turns translation off, and reports those values
+through the physical PL011.
 
-For this Cortex-A53/KVM-disabled bring-up image, secondary-only bookkeeping
-that is not required to enter secondary_start_kernel() is temporarily bypassed:
+For this Cortex-A53, KVM-disabled bring-up image, secondary-only bookkeeping
+that is not required to reach secondary_start_kernel() is temporarily bypassed:
 set_cpu_boot_mode_flag(), finalise_el2(), and the early boot-status clear.  The
-firmware has already shown every CPU entering through EL2, and Cortex-A53 has
-no VHE.  If secondary_data.task is unexpectedly zero, the CPU returns to the
-idmap and prints N<cpu> instead of silently parking.
+firmware and prior diagnostics already establish identical EL2 entry on boot
+and secondary CPUs, and Cortex-A53 has no VHE.  This is a diagnostic fast path,
+not the intended final production sequence.
+
+If secondary_data.task is unexpectedly zero, the CPU branches back to the idmap,
+disables translation, prints N<cpu>, and parks instead of silently waiting.
 """
 
 from pathlib import Path
@@ -103,8 +108,9 @@ def instrument_head(path: Path) -> None:
 \thg680ka_uart_marker 0x45
 \tbl\t__enable_mmu
 
-\t/* Translation is now on, but TTBR0 still maps .idmap.text. Install a
-\t * stackless low-VA catcher before entering normal kernel VA. */
+\t/* Translation is on and TTBR0 still identity-maps .idmap.text. VBAR
+\t * therefore points at the low runtime alias produced by this PC-relative
+\t * address calculation, while the handler itself remains in the idmap. */
 \tadrp\tx17, hg680ka_diag_vectors
 \tadd\tx17, x17, :lo12:hg680ka_diag_vectors
 \tmsr\tvbar_el1, x17
@@ -146,13 +152,9 @@ SYM_FUNC_END(__secondary_switched)
 '''
 
     new_switched = '''SYM_FUNC_START_LOCAL(__secondary_switched)
-\t/* HG680-KA direct bring-up diagnostic.
-\t *
-\t * CPU0 already established the boot mode; all tested secondaries enter
-\t * through EL2, and this Cortex-A53 has no VHE. Avoid the early secondary
-\t * bookkeeping calls for this diagnostic and get directly to the first
-\t * required shared-data load. The stackless idmap VBAR remains installed
-\t * until init_cpu_task has established a valid secondary stack. */
+\t/* HG680-KA direct bring-up diagnostic. Avoid the non-essential early
+\t * shared-data stores/HVC bookkeeping and go straight to the task handed
+\t * over by CPU0. The idmap VBAR stays active until a valid stack exists. */
 \tadr_l\tx0, secondary_data
 \tldr\tx2, [x0, #CPU_BOOT_TASK]
 \tcbnz\tx2, 1f
@@ -164,7 +166,8 @@ SYM_FUNC_END(__secondary_switched)
 \tptrauth_keys_init_cpu x2, x3, x4, x5
 #endif
 
-\t/* A real task/stack now exists; hand exceptions back to Linux. */
+\t/* A real secondary task/stack now exists. Restore the normal vectors
+\t * before entering C code. */
 \tadr_l\tx5, vectors
 \tmsr\tvbar_el1, x5
 \tisb
@@ -178,39 +181,21 @@ SYM_FUNC_END(__secondary_switched)
     vectors = r'''
 
 /*
- * HG680-KA stackless early-secondary exception catcher.
- * Keep it in .idmap.text so TTBR0 can service an exception before a secondary
- * stack exists. Each architectural vector slot is exactly 128 bytes.
+ * HG680-KA early-secondary synchronous-exception catcher.
+ *
+ * VBAR_EL1 needs 2 KiB alignment, but we only need Current EL with SPx,
+ * synchronous exception (offset 0x200). DAIF masks the asynchronous classes
+ * here. Emitting just that slot avoids violating arm64's one-page idmap limit.
  */
 	.align	11
 hg680ka_diag_vectors:
-	.macro	hg680ka_diag_ventry, nr
-	mov	x15, #\nr
+	.space	0x200
 	b	hg680ka_diag_exception
-	.space	120
-	.endm
-	hg680ka_diag_ventry 0
-	hg680ka_diag_ventry 1
-	hg680ka_diag_ventry 2
-	hg680ka_diag_ventry 3
-	hg680ka_diag_ventry 4
-	hg680ka_diag_ventry 5
-	hg680ka_diag_ventry 6
-	hg680ka_diag_ventry 7
-	hg680ka_diag_ventry 8
-	hg680ka_diag_ventry 9
-	hg680ka_diag_ventry 10
-	hg680ka_diag_ventry 11
-	hg680ka_diag_ventry 12
-	hg680ka_diag_ventry 13
-	hg680ka_diag_ventry 14
-	hg680ka_diag_ventry 15
 
 hg680ka_diag_exception:
 	mrs	x0, esr_el1
 	mrs	x1, elr_el1
 	mrs	x2, far_el1
-	mrs	x3, spsr_el1
 	mrs	x12, sctlr_el1
 	bic	x12, x12, #SCTLR_ELx_M
 	pre_disable_mmu_workaround
@@ -218,16 +203,6 @@ hg680ka_diag_exception:
 	isb
 
 	hg680ka_uart_marker 0x21		// !<cpu>
-	mov	w4, #'V'
-	hg680ka_uart_putc_reg w4
-	and	w4, w15, #0xf
-	cmp	w4, #9
-	add	w5, w4, #'0'
-	add	w4, w4, #('a' - 10)
-	csel	w4, w5, w4, ls
-	hg680ka_uart_putc_reg w4
-	mov	w4, #' '
-	hg680ka_uart_putc_reg w4
 	mov	w4, #'E'
 	hg680ka_uart_putc_reg w4
 	mov	w4, #'='
@@ -260,16 +235,18 @@ hg680ka_diag_no_task:
 	pre_disable_mmu_workaround
 	msr	sctlr_el1, x12
 	isb
-	hg680ka_uart_marker 0x4e		// N<cpu>: secondary_data.task was zero
+	hg680ka_uart_marker 0x4e		// N<cpu>: secondary_data.task == 0
 997:	wfe
 	b	997b
 '''
 
+    # Put the catcher at the very end of .idmap.text. This avoids inserting
+    # alignment padding in the middle of the normal idmap routines.
     text = replace_once(
         text,
-        'SYM_FUNC_END(__enable_mmu)\n',
-        'SYM_FUNC_END(__enable_mmu)\n' + vectors,
-        "idmap diagnostic vector table",
+        'SYM_FUNC_END(__primary_switch)',
+        'SYM_FUNC_END(__primary_switch)' + vectors,
+        "compact idmap diagnostic catcher",
     )
 
     path.write_text(text)
@@ -283,10 +260,14 @@ hg680ka_diag_no_task:
         "hg680ka_uart_hex64 x0",
         "cbnz\tx2, 1f",
         "bl\tsecondary_start_kernel",
+        ".space\t0x200",
     )
     for needle in required:
         if needle not in text:
             raise SystemExit(f"failed to insert required diagnostic: {needle}")
+
+    if "hg680ka_diag_ventry" in text:
+        raise SystemExit("full 2 KiB vector table must not be emitted into idmap")
 
 
 def instrument_proc(path: Path) -> None:
@@ -306,7 +287,7 @@ def instrument_proc(path: Path) -> None:
 2:	ldr	w12, [x10, #0x18]
 	tbnz	w12, #5, 2b
 	str	w11, [x10]
-	mov	w11, #'0' + (' ' - '0')
+	mov	w11, #' '
 3:	ldr	w12, [x10, #0x18]
 	tbnz	w12, #5, 3b
 	str	w11, [x10]
@@ -346,6 +327,10 @@ def instrument_proc(path: Path) -> None:
 
     path.write_text(text)
 
+    for marker in ("0x55", "0x56", "0x57", "0x58", "0x59", "0x5a"):
+        if f"hg680ka_setup_marker {marker}" not in text:
+            raise SystemExit(f"failed to insert __cpu_setup marker {marker}")
+
 
 def main() -> None:
     if len(sys.argv) != 2:
@@ -359,7 +344,7 @@ def main() -> None:
 
     instrument_head(head)
     instrument_proc(proc)
-    print(f"instrumented {head} with HG680-KA early fault catcher/direct bring-up")
+    print(f"instrumented {head} with compact HG680-KA sync catcher/direct bring-up")
     print(f"instrumented {proc} with HG680-KA __cpu_setup markers")
 
 
