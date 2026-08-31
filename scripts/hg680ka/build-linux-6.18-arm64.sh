@@ -45,7 +45,6 @@ test -s "$ATF_PM"
 printf 'Build host online CPUs: %s\n' "$(nproc)"
 printf 'Fetching Linux %s from kernel.org...\n' "$LINUX_VERSION"
 # kernel.org/CDN occasionally resets GitHub-hosted runner HTTP/2 streams.
-# Force HTTP/1.1 and retry transport errors as well as HTTP failures.
 curl --http1.1 --fail --location --retry 5 --retry-all-errors --retry-delay 2 \
 	--output "$WORK/$LINUX_ARCHIVE" "$LINUX_URL"
 printf '%s  %s\n' "$LINUX_SHA256" "$WORK/$LINUX_ARCHIVE" | sha256sum -c -
@@ -53,21 +52,17 @@ printf '%s  %s\n' "$LINUX_SHA256" "$WORK/$LINUX_ARCHIVE" | sha256sum -c -
 tar -C "$WORK" -xf "$WORK/$LINUX_ARCHIVE"
 test -d "$SRC"
 
-# Temporary hardware diagnostic: mark the secondary MMU-off path directly via
-# the physical PL011 so we can locate a stall before normal printk is usable.
+# The old pre-MMU success markers have already answered their questions and
+# consumed too much of arm64's one-page .idmap.text budget. The current
+# instrumentation only installs a compact synchronous fault catcher and a
+# direct secondary bring-up path after __enable_mmu().
 python3 "$SMP_INSTRUMENT" "$SRC/arch/arm64/kernel/head.S"
+grep -F 'hg680ka_diag_vectors' "$SRC/arch/arm64/kernel/head.S"
+grep -F 'hg680ka_diag_exception' "$SRC/arch/arm64/kernel/head.S"
+grep -F 'hg680ka_diag_no_task' "$SRC/arch/arm64/kernel/head.S"
+grep -F 'HG680-KA direct bring-up diagnostic' "$SRC/arch/arm64/kernel/head.S"
+! grep -F 'hg680ka_uart_marker 0x41' "$SRC/arch/arm64/kernel/head.S"
 
-grep -F 'hg680ka_uart_marker 0x41' "$SRC/arch/arm64/kernel/head.S"
-grep -F 'hg680ka_uart_marker 0x42' "$SRC/arch/arm64/kernel/head.S"
-grep -F 'hg680ka_uart_marker 0x43' "$SRC/arch/arm64/kernel/head.S"
-grep -F 'hg680ka_uart_marker 0x50' "$SRC/arch/arm64/kernel/head.S"
-grep -F 'hg680ka_uart_marker 0x44' "$SRC/arch/arm64/kernel/head.S"
-grep -F 'hg680ka_uart_marker 0x45' "$SRC/arch/arm64/kernel/head.S"
-
-# Do not build the enormous generic arm64 defconfig while debugging code that
-# runs before secondary_start_kernel(). Start from tinyconfig and enable only
-# the facilities required to reach the current SMP boundary. This also avoids
-# compiling unrelated PCI/network/SoC/KVM drivers on every diagnostic turn.
 printf 'Building Linux %s minimal ARM64 SMP diagnostic config...\n' "$LINUX_VERSION"
 make -C "$SRC" O="$KOUT" ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" tinyconfig
 
@@ -93,7 +88,6 @@ make -C "$SRC" O="$KOUT" ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" tinyconfig
 
 make -C "$SRC" O="$KOUT" ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
 
-# Fail early if Kconfig silently dropped any bring-up prerequisite.
 grep -F 'CONFIG_SMP=y' "$KOUT/.config"
 grep -F 'CONFIG_NR_CPUS=4' "$KOUT/.config"
 grep -F 'CONFIG_ARM_PSCI_FW=y' "$KOUT/.config"
@@ -108,6 +102,7 @@ grep -F 'CONFIG_SERIAL_AMBA_PL011_CONSOLE=y' "$KOUT/.config"
 grep -F 'CONFIG_ARM64_VA_BITS_48=y' "$KOUT/.config"
 grep -F '# CONFIG_ARM64_VA_BITS_52 is not set' "$KOUT/.config"
 grep -F 'CONFIG_ARM64_ERRATUM_843419=y' "$KOUT/.config"
+grep -F '# CONFIG_KVM is not set' "$KOUT/.config"
 
 JOBS="$(nproc)"
 printf 'Compiling Image with make -j%s\n' "$JOBS"
@@ -119,25 +114,28 @@ VMLINUX="$KOUT/vmlinux"
 test -s "$IMAGE"
 test -s "$VMLINUX"
 
-# Preserve the exact early-SMP machine code and symbol addresses in the small
-# artifact. This lets us reason about B1 -> C1 -> P1 -> U1 without rebuilding
-# just to recover a vmlinux disassembly.
+# Preserve all code around the remaining secondary boundary, including the
+# compact idmap catcher, so the board result can be mapped directly to machine
+# code without another rebuild.
 {
-	for sym in secondary_entry secondary_startup __cpu_setup __enable_mmu; do
+	for sym in secondary_entry secondary_startup __enable_mmu __secondary_switched \
+		secondary_start_kernel hg680ka_diag_vectors hg680ka_diag_exception \
+		hg680ka_diag_no_task __cpu_setup; do
 		"${CROSS_COMPILE}nm" -n "$VMLINUX" | grep -E "[[:space:]][tT][[:space:]]${sym}$" || true
 	done
+	"${CROSS_COMPILE}nm" -n "$VMLINUX" | grep -E '[[:space:]]__idmap_text_(start|end)$' || true
 } > "$ART/EARLY-SMP-SYMBOLS.txt"
 
 {
-	for sym in secondary_entry secondary_startup __cpu_setup __enable_mmu; do
+	for sym in secondary_startup __secondary_switched hg680ka_diag_exception \
+		hg680ka_diag_no_task __enable_mmu; do
 		printf '\n===== %s =====\n' "$sym"
 		"${CROSS_COMPILE}objdump" -d --disassemble="$sym" "$VMLINUX"
 	done
 } > "$ART/EARLY-SMP-DISASM.txt"
 
-# Only the four-CPU image is useful now: maxcpus=1 has already proven that the
-# boot CPU, timer, interrupt controller and init path work. Avoid duplicating
-# every large payload in the diagnostic artifact.
+cat "$ART/EARLY-SMP-SYMBOLS.txt"
+
 DTB_SMP="$ART/hi3798mv310-hg680ka-smpdiag.dtb"
 dtc -I dts -O dtb -o "$DTB_SMP" "$DTS"
 test -s "$DTB_SMP"
@@ -151,7 +149,6 @@ image_size=$(stat -c %s "$IMAGE")
 padded_size=$(( (image_size + 7) & ~7 ))
 truncate -s "$padded_size" "$PADDED_IMAGE"
 
-# Linux 6.18 requires the physical kernel image base to be 2 MiB aligned.
 UIMAGE="$ART/Image-6.18.46.uImage"
 mkimage -A arm64 -O linux -T kernel -C none \
 	-a "$KERNEL_LOAD_ADDR" -e "$KERNEL_LOAD_ADDR" \
@@ -159,13 +156,11 @@ mkimage -A arm64 -O linux -T kernel -C none \
 	-d "$PADDED_IMAGE" "$UIMAGE"
 (( $(stat -c %s "$UIMAGE") % 8 == 0 ))
 
-# Keep TF-A diagnostics lock-free and minimally perturbing: report SMPEN and
-# bracket the two GICv2 per-CPU setup calls, but do not modify cache state.
+# Keep the already-proven TF-A SMPEN/GIC markers for now; they live in BL31 and
+# do not consume Linux idmap space.
 python3 "$ATF_SMP_INSTRUMENT" "$ATF_PM"
 grep -F 'HG680-KA SMPEN diagnostic' "$ATF_PM"
 
-# Reuse the hardware-proven vendor TF-A build path. This also asserts BL31 is
-# linked at factory Fastboot's observed RVBAR address 0x08020000.
 bash "$ROOT/scripts/hg680ka/build-arm64-atf-smoke.sh" "$ATF_OUT"
 BL31="$ATF_OUT/artifacts/bl31.bin"
 BL31_ELF="$ATF_OUT/artifacts/bl31.elf"
