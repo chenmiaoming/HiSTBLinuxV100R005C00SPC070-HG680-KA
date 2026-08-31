@@ -67,6 +67,11 @@ def instrument_head(path: Path) -> None:
  * clear.  CCSIDR_EL1 on this ARMv8.0 Cortex-A53 uses the architectural
  * pre-CCIDX layout: LineSize[2:0], Associativity[12:3], NumSets[27:13].
  *
+ * The DC ISW Way field is defined in the low 32-bit Set/Way encoding, so the
+ * way shift must be CLZ32(NumWays - 1), matching the vendor ARMv7 routine.
+ * Using CLZ64 would place the Way field in bits 63:32 and invalidate the wrong
+ * set/way operands.
+ *
  * x0 is deliberately preserved: __cpu_setup() returns the SCTLR value for
  * __enable_mmu() in x0.  x20 is also preserved (boot mode).  x3-x10 are
  * scratch at this point in secondary_startup.
@@ -81,7 +86,7 @@ def instrument_head(path: Path) -> None:
 	and	x4, x3, #0x7		// log2(bytes/line) - 4
 	add	x4, x4, #4		// set field shift
 	ubfx	x5, x3, #3, #10	// NumWays - 1
-	clz	x6, x5			// way field shift
+	clz	w6, w5			// 32-bit Way field shift (e.g. 4 ways -> 30)
 	ubfx	x7, x3, #13, #15	// NumSets - 1
 
 1:	mov	x8, x5
@@ -154,6 +159,8 @@ def instrument_head(path: Path) -> None:
             raise SystemExit(f"failed to insert head marker {marker}")
     if "hg680ka_invalidate_l1_dcache" not in text or "dc\tisw" not in text:
         raise SystemExit("failed to insert HG680-KA secondary L1 invalidate")
+    if "clz\tw6, w5" not in text:
+        raise SystemExit("secondary L1 invalidate must use 32-bit CLZ for WayShift")
 
 
 def instrument_proc(path: Path) -> None:
