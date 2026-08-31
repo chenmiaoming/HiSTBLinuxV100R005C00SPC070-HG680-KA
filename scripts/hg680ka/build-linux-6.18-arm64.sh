@@ -102,7 +102,7 @@ grep -F 'CONFIG_SERIAL_AMBA_PL011_CONSOLE=y' "$KOUT/.config"
 grep -F 'CONFIG_ARM64_VA_BITS_48=y' "$KOUT/.config"
 grep -F '# CONFIG_ARM64_VA_BITS_52 is not set' "$KOUT/.config"
 grep -F 'CONFIG_ARM64_ERRATUM_843419=y' "$KOUT/.config"
-grep -F '# CONFIG_KVM is not set' "$KOUT/.config"
+! grep -F 'CONFIG_KVM=y' "$KOUT/.config"
 
 JOBS="$(nproc)"
 printf 'Compiling Image with make -j%s\n' "$JOBS"
