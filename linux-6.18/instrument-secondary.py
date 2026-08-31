@@ -9,13 +9,15 @@ PL011 marker writes poll UARTFR.TXFF before every UARTDR access. Without this,
 back-to-back early markers can fill the small TX FIFO and perturb the exact
 secondary path being measured.
 
-The final M marker is a deliberate one-shot MMU round-trip diagnostic. After
-set_sctlr_el1() returns with the MMU enabled, execution is still in .idmap.text.
-The instrumentation immediately clears SCTLR_EL1.M using the kernel's normal
-pre-disable workaround, emits M<cpu> through the physical UART, and parks that
-secondary. Seeing M therefore proves that the MMU-enable sequence itself
+The final M marker is a deliberate one-shot secondary MMU round-trip
+diagnostic. __enable_mmu() is shared by the primary and secondary boot paths,
+so the injected code first checks MPIDR_EL1.Aff0 and lets CPU0 return normally.
+For CPU1-3, after set_sctlr_el1() completes with the MMU enabled, execution is
+still in .idmap.text. The instrumentation clears SCTLR_EL1.M using the kernel's
+normal pre-disable workaround, emits M<cpu> through the physical UART, and parks
+that secondary. Seeing M therefore proves that the MMU-enable sequence itself
 completed; absence of M narrows the stall to the SCTLR/MMU-enable boundary.
-The test intentionally never onlines the secondary.
+The test intentionally never onlines a secondary CPU.
 """
 
 from pathlib import Path
@@ -76,7 +78,7 @@ def instrument_head(path: Path) -> None:
     text = replace_once(
         text,
         '\tload_ttbr1 x1, x1, x3\n\n\tset_sctlr_el1\tx0\n',
-        '''\tload_ttbr1 x1, x1, x3\n\n\thg680ka_uart_marker 0x45\n\tset_sctlr_el1\tx0\n\n\t/* HG680-KA one-shot MMU round-trip diagnostic. We are still executing\n\t * from .idmap.text here. If set_sctlr_el1() completed, switch M back\n\t * off using the same pre-disable workaround used by normal arm64 code,\n\t * then touch the physical PL011, emit M<cpu>, and park. This intentionally\n\t * prevents the secondary from reaching normal C code. */\n\tmrs\tx12, sctlr_el1\n\tbic\tx12, x12, #SCTLR_ELx_M\n\tpre_disable_mmu_workaround\n\tmsr\tsctlr_el1, x12\n\tisb\n\thg680ka_uart_marker 0x4d\n998:\twfe\n\tb\t998b\n''',
+        '''\tload_ttbr1 x1, x1, x3\n\n\thg680ka_uart_marker 0x45\n\tset_sctlr_el1\tx0\n\n\t/* HG680-KA one-shot secondary MMU round-trip diagnostic. __enable_mmu\n\t * is shared with the primary path, so CPU0 must return normally. */\n\tmrs\tx12, mpidr_el1\n\tand\tx12, x12, #0xff\n\tcbz\tx12, 997f\n\n\t/* A secondary reached the instruction after set_sctlr_el1() with the\n\t * MMU enabled. Switch M back off while still executing from .idmap.text,\n\t * then report through the physical PL011 and park deliberately. */\n\tmrs\tx12, sctlr_el1\n\tbic\tx12, x12, #SCTLR_ELx_M\n\tpre_disable_mmu_workaround\n\tmsr\tsctlr_el1, x12\n\tisb\n\thg680ka_uart_marker 0x4d\n998:\twfe\n\tb\t998b\n997:\n''',
         "post SCTLR_EL1 MMU round-trip",
     )
     path.write_text(text)
