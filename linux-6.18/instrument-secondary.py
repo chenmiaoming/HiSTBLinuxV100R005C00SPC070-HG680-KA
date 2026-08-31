@@ -8,6 +8,13 @@ place.
 PL011 marker writes poll UARTFR.TXFF before every UARTDR access. Without this,
 back-to-back early markers can fill the small TX FIFO and perturb the exact
 secondary path being measured.
+
+The final M marker is a deliberate one-shot MMU round-trip diagnostic. After
+set_sctlr_el1() returns with the MMU enabled, execution is still in .idmap.text.
+The instrumentation immediately clears SCTLR_EL1.M/C, emits M<cpu> through the
+physical UART, and parks that secondary. Seeing M therefore proves that the
+MMU-enable sequence itself completed; absence of M narrows the stall to the
+SCTLR/MMU-enable boundary. The test intentionally never onlines the secondary.
 """
 
 from pathlib import Path
@@ -68,12 +75,12 @@ def instrument_head(path: Path) -> None:
     text = replace_once(
         text,
         '\tload_ttbr1 x1, x1, x3\n\n\tset_sctlr_el1\tx0\n',
-        '\tload_ttbr1 x1, x1, x3\n\n\thg680ka_uart_marker 0x45\n\tset_sctlr_el1\tx0\n',
-        "pre SCTLR_EL1 MMU enable",
+        '''\tload_ttbr1 x1, x1, x3\n\n\thg680ka_uart_marker 0x45\n\tset_sctlr_el1\tx0\n\n\t/* HG680-KA one-shot MMU round-trip diagnostic. We are still executing\n\t * from .idmap.text here. If set_sctlr_el1() completed, switch M/C back\n\t * off before touching the physical PL011, emit M<cpu>, then park. This\n\t * intentionally prevents the secondary from reaching normal C code. */\n\tmrs\tx12, sctlr_el1\n\tbic\tx12, x12, #SCTLR_ELx_M\n\tbic\tx12, x12, #SCTLR_ELx_C\n\tmsr\tsctlr_el1, x12\n\tisb\n\thg680ka_uart_marker 0x4d\n998:\twfe\n\tb\t998b\n''',
+        "post SCTLR_EL1 MMU round-trip",
     )
     path.write_text(text)
 
-    for marker in ("0x41", "0x42", "0x43", "0x50", "0x44", "0x45"):
+    for marker in ("0x41", "0x42", "0x43", "0x50", "0x44", "0x45", "0x4d"):
         if f"hg680ka_uart_marker {marker}" not in text:
             raise SystemExit(f"failed to insert head marker {marker}")
 
@@ -161,7 +168,7 @@ def main() -> None:
 
     instrument_head(head)
     instrument_proc(proc)
-    print(f"instrumented {head} with FIFO-safe HG680-KA secondary markers A-E/P")
+    print(f"instrumented {head} with FIFO-safe HG680-KA secondary markers A-E/P/M")
     print(f"instrumented {proc} with FIFO-safe HG680-KA __cpu_setup markers U-Z")
 
 
