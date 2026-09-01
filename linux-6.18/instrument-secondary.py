@@ -1,30 +1,23 @@
 #!/usr/bin/env python3
-"""Apply the HG680-KA late-secondary diagnostic fast path.
+"""Instrument only the still-unknown high-VA arm64 secondary path on HG680-KA.
 
-Earlier board tests already proved all of the following on CPU1:
-  * PSCI/TF-A CPU release and Cortex-A53 SMPEN
-  * init_kernel_el() and __cpu_setup()
-  * stage-1 MMU enable and __enable_mmu() return
-  * TTBR1 high-VA kernel instruction fetch
+Board tests have already proved CPU1 PSCI/TF-A release, Cortex-A53 SMPEN,
+init_kernel_el(), __cpu_setup(), __enable_mmu() return, and the branch/fetch into
+kernel high virtual addresses.  Therefore this diagnostic deliberately leaves
+secondary_startup and the complete .idmap.text path byte-for-byte upstream.
 
-Do not keep those old A/B/C/P/D/E/U-Z UART probes in the image: each probe
-expands to a polling PL011 sequence and consumes scarce .idmap.text space.
-Linux arm64 enforces that the complete idmap text fits in one 4 KiB page.
+The diagnostic starts at __secondary_switched, which lives in normal .text:
+  * install a 2 KiB-aligned high-VA synchronous exception vector in .text;
+  * retain the normal Linux secondary initialization order;
+  * record compact stage breadcrumbs in one cache-line-aligned .data block;
+  * if a synchronous exception occurs before the real kernel vectors are safe,
+    record ESR_EL1, ELR_EL1 and FAR_EL1 and park the secondary;
+  * after init_cpu_task establishes stack/per-CPU context, restore the normal
+    Linux vector table and enter secondary_start_kernel().
 
-This revision therefore changes only the still-unknown boundary after
-__enable_mmu():
-  * install a compact, stackless EL1 synchronous-exception catcher in idmap;
-  * temporarily bypass secondary boot-mode/EL2 bookkeeping already known to
-    be redundant for this Cortex-A53, KVM-disabled diagnostic image;
-  * load secondary_data.task, establish the secondary stack, restore normal
-    vectors, and enter secondary_start_kernel();
-  * print N<cpu> with MMU off if secondary_data.task is unexpectedly zero;
-  * print !<cpu> plus ESR_EL1/ELR_EL1/FAR_EL1 if an early synchronous exception
-    occurs before the normal kernel vector table is restored.
-
-The catcher emits only the Current-EL-with-SPx synchronous vector slot at
-VBAR+0x200. IRQ/FIQ/SError are masked during this early path, so a full 2 KiB
-vector table is unnecessary.
+CPU0 prints the diagnostic block if the 5 second CPU-online wait expires.  This
+avoids physical-UART code and, critically, adds nothing to arm64's one-page
+.idmap.text budget.
 """
 
 from pathlib import Path
@@ -41,69 +34,35 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 def instrument_head(path: Path) -> None:
     text = path.read_text()
 
-    helpers = r'''
-/* HG680-KA MMU-off diagnostic UART helpers. Used only on failure paths. */
-	.macro	hg680ka_uart_putc_reg, reg
-	movz	x9, #0xf8b0, lsl #16
-991:	ldr	w11, [x9, #0x18]
-	tbnz	w11, #5, 991b
-	str	\reg, [x9]
-	.endm
-
-	.macro	hg680ka_uart_cpu_tag, ch
-	mov	w10, #\ch
-	hg680ka_uart_putc_reg w10
-	mrs	x10, mpidr_el1
-	and	w10, w10, #0xff
-	add	w10, w10, #'0'
-	hg680ka_uart_putc_reg w10
-	mov	w10, #' '
-	hg680ka_uart_putc_reg w10
-	.endm
-
-	.macro	hg680ka_uart_hex64, src
-	mov	x6, #60
-992:	lsrv	x5, \src, x6
-	and	w5, w5, #0xf
-	cmp	w5, #9
-	add	w4, w5, #'0'
-	add	w5, w5, #('a' - 10)
-	csel	w4, w4, w5, ls
-	hg680ka_uart_putc_reg w4
-	subs	x6, x6, #4
-	b.pl	992b
+    stage_macro = r'''
+/* HG680-KA high-VA secondary breadcrumb.  One coherent cache line only. */
+	.macro	hg680ka_diag_stage, stage
+	adr_l	x12, hg680ka_diag_state
+	mov	x13, #\stage
+	str	x13, [x12, #32]
+	dc	cvac, x12
+	dsb	sy
 	.endm
 '''
-
     text = replace_once(
         text,
         '#include "efi-header.S"\n',
-        '#include "efi-header.S"\n' + helpers,
-        "diagnostic UART helpers",
+        '#include "efi-header.S"\n' + stage_macro,
+        "diagnostic stage macro",
     )
 
-    # Keep the normal secondary path untouched until __enable_mmu() has
-    # returned. All earlier boundaries have already been demonstrated on-board.
-    text = replace_once(
-        text,
-        '\tadrp\tx2, idmap_pg_dir\n\tbl\t__enable_mmu\n\tldr\tx8, =__secondary_switched\n\tbr\tx8\n',
-        '''\tadrp\tx2, idmap_pg_dir
-\tbl\t__enable_mmu
-
-\t/* TTBR0 still identity-maps .idmap.text. Install a low-runtime-address
-\t * synchronous catcher before jumping to the normal high-VA text. */
-\tadrp\tx17, hg680ka_diag_vectors
-\tadd\tx17, x17, :lo12:hg680ka_diag_vectors
-\tmsr\tvbar_el1, x17
-\tisb
-\tadrp\tx18, hg680ka_diag_no_task
-\tadd\tx18, x18, :lo12:hg680ka_diag_no_task
-
-\tldr\tx8, =__secondary_switched
-\tbr\tx8
-''',
-        "post-MMU catcher install",
+    # Do not touch secondary_startup/.idmap.text.  The previous board run has
+    # already proved the high-VA branch itself, and linker diagnostics showed
+    # that placing a VBAR table in idmap is unacceptable.
+    upstream_startup = (
+        '\tadrp\tx1, swapper_pg_dir\n'
+        '\tadrp\tx2, idmap_pg_dir\n'
+        '\tbl\t__enable_mmu\n'
+        '\tldr\tx8, =__secondary_switched\n'
+        '\tbr\tx8\n'
     )
+    if text.count(upstream_startup) != 1:
+        raise SystemExit("secondary_startup is not the expected untouched upstream sequence")
 
     old_switched = '''SYM_FUNC_START_LOCAL(__secondary_switched)
 \tmov\tx0, x20
@@ -133,99 +92,101 @@ SYM_FUNC_END(__secondary_switched)
 '''
 
     new_switched = '''SYM_FUNC_START_LOCAL(__secondary_switched)
-\t/* HG680-KA direct bring-up diagnostic. The board has already proven
-\t * identical EL2 entry and this Cortex-A53 has no VHE. In this KVM-disabled
-\t * image, skip the secondary-only bookkeeping stores/HVC and get directly
-\t * to the task pointer CPU0 prepared for this CPU. */
+\t/* J1 already proved that this high-VA entry is executable.  From here on,
+\t * keep Linux's normal semantics and only add diagnostics. */
+\tldr\tx17, =hg680ka_diag_vectors
+\tmsr\tvbar_el1, x17
+\tisb
+\thg680ka_diag_stage 0x70
+
+\tmov\tx0, x20
+\thg680ka_diag_stage 0x71
+\tbl\tset_cpu_boot_mode_flag
+\thg680ka_diag_stage 0x72
+
+\tmov\tx0, x20
+\thg680ka_diag_stage 0x73
+\tbl\tfinalise_el2
+\thg680ka_diag_stage 0x74
+
+\tstr_l\txzr, __early_cpu_boot_status, x3
+\thg680ka_diag_stage 0x75
+
 \tadr_l\tx0, secondary_data
+\thg680ka_diag_stage 0x76
 \tldr\tx2, [x0, #CPU_BOOT_TASK]
-\tcbnz\tx2, 1f
-\tbr\tx18
-1:
+\tcbz\tx2, __secondary_too_slow
+\thg680ka_diag_stage 0x77
+
 \tinit_cpu_task x2, x1, x3
+\thg680ka_diag_stage 0x78
 
 #ifdef CONFIG_ARM64_PTR_AUTH
 \tptrauth_keys_init_cpu x2, x3, x4, x5
 #endif
 
-\t/* The secondary task/stack now exists; normal exception handling is safe. */
+\t/* Stack and per-CPU context now exist; hand exceptions back to Linux. */
 \tadr_l\tx5, vectors
 \tmsr\tvbar_el1, x5
 \tisb
+\thg680ka_diag_stage 0x79
 
 \tbl\tsecondary_start_kernel
 \tASM_BUG()
 SYM_FUNC_END(__secondary_switched)
 '''
-    text = replace_once(text, old_switched, new_switched, "direct __secondary_switched")
+    text = replace_once(text, old_switched, new_switched, "instrument __secondary_switched")
 
     catcher = r'''
 
 /*
- * HG680-KA stackless early-secondary synchronous catcher.
- * VBAR is 2 KiB aligned. Only Current EL with SPx synchronous (+0x200) is
- * needed while DAIF masks asynchronous exceptions.
+ * HG680-KA early high-VA synchronous catcher.  This is ordinary .text, not
+ * .idmap.text.  Only Current EL with SPx synchronous (+0x200) is populated;
+ * asynchronous exceptions remain masked on this path.
  */
 	.align	11
+	.global	hg680ka_diag_vectors
 hg680ka_diag_vectors:
 	.space	0x200
 	b	hg680ka_diag_exception
 
+	.global	hg680ka_diag_exception
 hg680ka_diag_exception:
 	mrs	x0, esr_el1
 	mrs	x1, elr_el1
 	mrs	x2, far_el1
-	mrs	x12, sctlr_el1
-	bic	x12, x12, #SCTLR_ELx_M
-	pre_disable_mmu_workaround
-	msr	sctlr_el1, x12
-	isb
+	adr_l	x3, hg680ka_diag_state
+	stp	x0, x1, [x3]
+	str	x2, [x3, #16]
+	mov	x4, #0xe1
+	str	x4, [x3, #24]
+	dc	cvac, x3
+	dsb	sy
+996:	wfe
+	b	996b
 
-	hg680ka_uart_cpu_tag 0x21		// !<cpu>
-	mov	w4, #'E'
-	hg680ka_uart_putc_reg w4
-	mov	w4, #'='
-	hg680ka_uart_putc_reg w4
-	hg680ka_uart_hex64 x0
-	mov	w4, #' '
-	hg680ka_uart_putc_reg w4
-	mov	w4, #'L'
-	hg680ka_uart_putc_reg w4
-	mov	w4, #'='
-	hg680ka_uart_putc_reg w4
-	hg680ka_uart_hex64 x1
-	mov	w4, #' '
-	hg680ka_uart_putc_reg w4
-	mov	w4, #'F'
-	hg680ka_uart_putc_reg w4
-	mov	w4, #'='
-	hg680ka_uart_putc_reg w4
-	hg680ka_uart_hex64 x2
-	mov	w4, #'\r'
-	hg680ka_uart_putc_reg w4
-	mov	w4, #'\n'
-	hg680ka_uart_putc_reg w4
-998:	wfe
-	b	998b
-
-hg680ka_diag_no_task:
-	mrs	x12, sctlr_el1
-	bic	x12, x12, #SCTLR_ELx_M
-	pre_disable_mmu_workaround
-	msr	sctlr_el1, x12
-	isb
-	hg680ka_uart_cpu_tag 0x4e		// N<cpu>
-997:	wfe
-	b	997b
+	.pushsection .data
+	.balign	64
+	.global	hg680ka_diag_state
+hg680ka_diag_state:
+	.quad	0		// +0  ESR_EL1
+	.quad	0		// +8  ELR_EL1
+	.quad	0		// +16 FAR_EL1
+	.quad	0		// +24 event (0xe1 == synchronous exception)
+	.quad	0		// +32 last completed/entered stage
+	.quad	0
+	.quad	0
+	.quad	0
+	.popsection
 '''
 
-    # head.S ends in .idmap.text after __primary_switch, so putting the catcher
-    # here avoids padding holes in the middle of live idmap routines.
+    # __secondary_too_slow is in normal .text, so the aligned catcher remains
+    # completely outside the identity-mapped section.
     text = replace_once(
         text,
-        'SYM_FUNC_END(__primary_switch)',
-        'SYM_FUNC_END(__primary_switch)' + catcher,
-        "compact idmap catcher",
+        'SYM_FUNC_END(__secondary_too_slow)',
+        'SYM_FUNC_END(__secondary_too_slow)' + catcher,
+        "high-VA catcher/state",
     )
 
     path.write_text(text)
@@ -233,31 +194,62 @@ hg680ka_diag_no_task:
     required = (
         "hg680ka_diag_vectors",
         "hg680ka_diag_exception",
-        "hg680ka_diag_no_task",
-        "hg680ka_uart_hex64 x0",
-        "cbnz\tx2, 1f",
+        "hg680ka_diag_state",
+        "hg680ka_diag_stage 0x70",
+        "hg680ka_diag_stage 0x79",
+        "bl\tset_cpu_boot_mode_flag",
+        "bl\tfinalise_el2",
         "bl\tsecondary_start_kernel",
-        ".space\t0x200",
     )
     for needle in required:
         if needle not in text:
             raise SystemExit(f"failed to insert required diagnostic: {needle}")
 
-    # The obsolete success-path UART markers must stay gone; they were large
-    # enough to make the one-page idmap constraint difficult to satisfy.
-    for obsolete in ("0x41", "0x42", "0x43", "0x44", "0x45", "0x50",
-                     "hg680ka_setup_marker"):
+    for obsolete in ("hg680ka_uart_marker", "hg680ka_uart_putc_reg",
+                     "hg680ka_diag_no_task"):
         if obsolete in text:
-            raise SystemExit(f"obsolete early marker unexpectedly present: {obsolete}")
+            raise SystemExit(f"obsolete idmap/UART diagnostic unexpectedly present: {obsolete}")
+
+
+def instrument_smp(path: Path) -> None:
+    text = path.read_text()
+
+    text = replace_once(
+        text,
+        'struct secondary_data secondary_data;\n',
+        'struct secondary_data secondary_data;\n'
+        'extern u64 hg680ka_diag_state[8];\n',
+        "smp diagnostic extern",
+    )
+
+    old = '\tpr_crit("CPU%u: failed to come online\\n", cpu);\n'
+    new = '''\tpr_crit("CPU%u: failed to come online\\n", cpu);
+\tpr_crit("CPU%u: HG680-KA stage=0x%llx event=0x%llx ESR=0x%016llx ELR=0x%016llx FAR=0x%016llx\\n",
+\t\tcpu,
+\t\t(unsigned long long)READ_ONCE(hg680ka_diag_state[4]),
+\t\t(unsigned long long)READ_ONCE(hg680ka_diag_state[3]),
+\t\t(unsigned long long)READ_ONCE(hg680ka_diag_state[0]),
+\t\t(unsigned long long)READ_ONCE(hg680ka_diag_state[1]),
+\t\t(unsigned long long)READ_ONCE(hg680ka_diag_state[2]));
+'''
+    text = replace_once(text, old, new, "CPU-online timeout diagnostic")
+    path.write_text(text)
+
+    if "HG680-KA stage=0x%llx" not in text:
+        raise SystemExit("failed to instrument smp.c timeout")
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        raise SystemExit(f"usage: {sys.argv[0]} <arch/arm64/kernel/head.S>")
+    if len(sys.argv) != 3:
+        raise SystemExit(
+            f"usage: {sys.argv[0]} <arch/arm64/kernel/head.S> <arch/arm64/kernel/smp.c>"
+        )
 
     head = Path(sys.argv[1])
+    smp = Path(sys.argv[2])
     instrument_head(head)
-    print(f"instrumented {head} with compact HG680-KA fault catcher/direct bring-up")
+    instrument_smp(smp)
+    print(f"instrumented {head} and {smp} with high-VA HG680-KA diagnostics")
 
 
 if __name__ == "__main__":
