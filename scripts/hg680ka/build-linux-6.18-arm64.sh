@@ -61,7 +61,7 @@ grep -F 'adr\tx19, hg680ka_highva_return' "$SRC/arch/arm64/kernel/head.S" || \
 	grep -F $'adr\tx19, hg680ka_highva_return' "$SRC/arch/arm64/kernel/head.S"
 grep -F $'br\tx19' "$SRC/arch/arm64/kernel/head.S"
 grep -F 'SYM_CODE_START_LOCAL(hg680ka_highva_return)' "$SRC/arch/arm64/kernel/head.S"
-grep -F $"mov\tw10, #'J'" "$SRC/arch/arm64/kernel/head.S"
+grep -F 'Print J<Aff0>' "$SRC/arch/arm64/kernel/head.S"
 ! grep -F 'hg680ka_diag_stage' "$SRC/arch/arm64/kernel/head.S"
 ! grep -F 'hg680ka_diag_state' "$SRC/arch/arm64/kernel/head.S"
 ! grep -F $'dc\tcvac' "$SRC/arch/arm64/kernel/head.S"
