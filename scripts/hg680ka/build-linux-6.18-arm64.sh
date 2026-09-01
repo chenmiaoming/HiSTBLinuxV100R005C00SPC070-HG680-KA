@@ -52,16 +52,20 @@ printf '%s  %s\n' "$LINUX_SHA256" "$WORK/$LINUX_ARCHIVE" | sha256sum -c -
 tar -C "$WORK" -xf "$WORK/$LINUX_ARCHIVE"
 test -d "$SRC"
 
-# The old pre-MMU success markers have already answered their questions and
-# consumed too much of arm64's one-page .idmap.text budget. The current
-# instrumentation only installs a compact synchronous fault catcher and a
-# direct secondary bring-up path after __enable_mmu().
-python3 "$SMP_INSTRUMENT" "$SRC/arch/arm64/kernel/head.S"
+# All proven pre-MMU probes are gone.  The current diagnostic deliberately
+# leaves secondary_startup/.idmap.text untouched and instruments only the
+# normal high-VA __secondary_switched path plus CPU0's timeout report.
+python3 "$SMP_INSTRUMENT" \
+	"$SRC/arch/arm64/kernel/head.S" \
+	"$SRC/arch/arm64/kernel/smp.c"
 grep -F 'hg680ka_diag_vectors' "$SRC/arch/arm64/kernel/head.S"
 grep -F 'hg680ka_diag_exception' "$SRC/arch/arm64/kernel/head.S"
-grep -F 'hg680ka_diag_no_task' "$SRC/arch/arm64/kernel/head.S"
-grep -F 'HG680-KA direct bring-up diagnostic' "$SRC/arch/arm64/kernel/head.S"
-! grep -F 'hg680ka_uart_marker 0x41' "$SRC/arch/arm64/kernel/head.S"
+grep -F 'hg680ka_diag_state' "$SRC/arch/arm64/kernel/head.S"
+grep -F 'hg680ka_diag_stage 0x70' "$SRC/arch/arm64/kernel/head.S"
+grep -F 'hg680ka_diag_stage 0x79' "$SRC/arch/arm64/kernel/head.S"
+grep -F 'HG680-KA stage=0x%llx' "$SRC/arch/arm64/kernel/smp.c"
+! grep -F 'hg680ka_uart_marker' "$SRC/arch/arm64/kernel/head.S"
+! grep -F 'hg680ka_diag_no_task' "$SRC/arch/arm64/kernel/head.S"
 
 printf 'Building Linux %s minimal ARM64 SMP diagnostic config...\n' "$LINUX_VERSION"
 make -C "$SRC" O="$KOUT" ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" tinyconfig
@@ -114,21 +118,29 @@ VMLINUX="$KOUT/vmlinux"
 test -s "$IMAGE"
 test -s "$VMLINUX"
 
-# Preserve all code around the remaining secondary boundary, including the
-# compact idmap catcher, so the board result can be mapped directly to machine
-# code without another rebuild.
+# Enforce the arm64 linker invariant explicitly and record the exact size.
+idmap_start_hex=$("${CROSS_COMPILE}nm" -n "$VMLINUX" | awk '$3 == "__idmap_text_start" {print $1}')
+idmap_end_hex=$("${CROSS_COMPILE}nm" -n "$VMLINUX" | awk '$3 == "__idmap_text_end" {print $1}')
+test -n "$idmap_start_hex"
+test -n "$idmap_end_hex"
+idmap_size=$((16#$idmap_end_hex - 16#$idmap_start_hex))
+printf 'arm64 idmap text size: %u bytes\n' "$idmap_size"
+(( idmap_size <= 4096 ))
+
+# Preserve symbols/disassembly so an ELR reported by CPU0 maps directly back to
+# the exact failing instruction without rebuilding.
 {
 	for sym in secondary_entry secondary_startup __enable_mmu __secondary_switched \
-		secondary_start_kernel hg680ka_diag_vectors hg680ka_diag_exception \
-		hg680ka_diag_no_task __cpu_setup; do
+		secondary_start_kernel hg680ka_diag_vectors hg680ka_diag_exception __cpu_setup; do
 		"${CROSS_COMPILE}nm" -n "$VMLINUX" | grep -E "[[:space:]][tT][[:space:]]${sym}$" || true
 	done
+	"${CROSS_COMPILE}nm" -n "$VMLINUX" | grep -E '[[:space:]]hg680ka_diag_state$' || true
 	"${CROSS_COMPILE}nm" -n "$VMLINUX" | grep -E '[[:space:]]__idmap_text_(start|end)$' || true
 } > "$ART/EARLY-SMP-SYMBOLS.txt"
 
 {
 	for sym in secondary_startup __secondary_switched hg680ka_diag_exception \
-		hg680ka_diag_no_task __enable_mmu; do
+		__enable_mmu secondary_start_kernel; do
 		printf '\n===== %s =====\n' "$sym"
 		"${CROSS_COMPILE}objdump" -d --disassemble="$sym" "$VMLINUX"
 	done
@@ -189,6 +201,7 @@ printf 'Build host nproc:      %s\n' "$JOBS" | tee -a "$ART/BUILD-INFO.txt"
 printf 'Linux raw Image size: %u bytes\n' "$image_size" | tee -a "$ART/BUILD-INFO.txt"
 printf 'Linux padded size:    %u bytes\n' "$padded_size" | tee -a "$ART/BUILD-INFO.txt"
 printf 'Kernel load address:  0x%08x\n' "$((KERNEL_LOAD_ADDR))" | tee -a "$ART/BUILD-INFO.txt"
+printf 'arm64 idmap text size:%u bytes\n' "$idmap_size" | tee -a "$ART/BUILD-INFO.txt"
 printf 'SMP DTB size:         %u bytes\n' "$(stat -c %s "$DTB_SMP")" | tee -a "$ART/BUILD-INFO.txt"
 printf 'SMP BL33 packed size: %u bytes\n' "$(stat -c %s "$BL33")" | tee -a "$ART/BUILD-INFO.txt"
 printf 'Linux version:        %s\n' "$LINUX_VERSION" | tee -a "$ART/BUILD-INFO.txt"
