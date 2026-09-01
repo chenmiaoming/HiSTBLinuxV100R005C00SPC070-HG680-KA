@@ -52,20 +52,19 @@ printf '%s  %s\n' "$LINUX_SHA256" "$WORK/$LINUX_ARCHIVE" | sha256sum -c -
 tar -C "$WORK" -xf "$WORK/$LINUX_ARCHIVE"
 test -d "$SRC"
 
-# All proven pre-MMU probes are gone.  The current diagnostic deliberately
-# leaves secondary_startup/.idmap.text untouched and instruments only the
-# normal high-VA __secondary_switched path plus CPU0's timeout report.
-python3 "$SMP_INSTRUMENT" \
-	"$SRC/arch/arm64/kernel/head.S" \
-	"$SRC/arch/arm64/kernel/smp.c"
-grep -F 'hg680ka_diag_vectors' "$SRC/arch/arm64/kernel/head.S"
-grep -F 'hg680ka_diag_exception' "$SRC/arch/arm64/kernel/head.S"
-grep -F 'hg680ka_diag_state' "$SRC/arch/arm64/kernel/head.S"
-grep -F 'hg680ka_diag_stage 0x70' "$SRC/arch/arm64/kernel/head.S"
-grep -F 'hg680ka_diag_stage 0x79' "$SRC/arch/arm64/kernel/head.S"
-grep -F 'HG680-KA stage=0x%llx' "$SRC/arch/arm64/kernel/smp.c"
-! grep -F 'hg680ka_uart_marker' "$SRC/arch/arm64/kernel/head.S"
-! grep -F 'hg680ka_diag_no_task' "$SRC/arch/arm64/kernel/head.S"
+# Pure control-flow proof: after __enable_mmu(), branch into the normal high-VA
+# __secondary_switched entry, immediately return to an idmap helper through x19,
+# disable the MMU, and print J<cpu> on the physical PL011. No high-VA data
+# accesses, VBAR changes, cache maintenance, or shared diagnostic state exist.
+python3 "$SMP_INSTRUMENT" "$SRC/arch/arm64/kernel/head.S"
+grep -F 'adr\tx19, hg680ka_highva_return' "$SRC/arch/arm64/kernel/head.S" || \
+	grep -F $'adr\tx19, hg680ka_highva_return' "$SRC/arch/arm64/kernel/head.S"
+grep -F $'br\tx19' "$SRC/arch/arm64/kernel/head.S"
+grep -F 'SYM_CODE_START_LOCAL(hg680ka_highva_return)' "$SRC/arch/arm64/kernel/head.S"
+grep -F $"mov\tw10, #'J'" "$SRC/arch/arm64/kernel/head.S"
+! grep -F 'hg680ka_diag_stage' "$SRC/arch/arm64/kernel/head.S"
+! grep -F 'hg680ka_diag_state' "$SRC/arch/arm64/kernel/head.S"
+! grep -F $'dc\tcvac' "$SRC/arch/arm64/kernel/head.S"
 
 printf 'Building Linux %s minimal ARM64 SMP diagnostic config...\n' "$LINUX_VERSION"
 make -C "$SRC" O="$KOUT" ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" tinyconfig
@@ -127,26 +126,32 @@ idmap_size=$((16#$idmap_end_hex - 16#$idmap_start_hex))
 printf 'arm64 idmap text size: %u bytes\n' "$idmap_size"
 (( idmap_size <= 4096 ))
 
-# Preserve symbols/disassembly so an ELR reported by CPU0 maps directly back to
-# the exact failing instruction without rebuilding.
+# Save exact code so J1 (or its absence) can be tied to the generated control
+# flow, and verify that the high-VA body really contains BR X19 before any
+# ordinary data access.
 {
-	for sym in secondary_entry secondary_startup __enable_mmu __secondary_switched \
-		secondary_start_kernel hg680ka_diag_vectors hg680ka_diag_exception __cpu_setup; do
+	for sym in secondary_entry secondary_startup hg680ka_highva_return \
+		__enable_mmu __secondary_switched secondary_start_kernel __cpu_setup; do
 		"${CROSS_COMPILE}nm" -n "$VMLINUX" | grep -E "[[:space:]][tT][[:space:]]${sym}$" || true
 	done
-	"${CROSS_COMPILE}nm" -n "$VMLINUX" | grep -E '[[:space:]]hg680ka_diag_state$' || true
 	"${CROSS_COMPILE}nm" -n "$VMLINUX" | grep -E '[[:space:]]__idmap_text_(start|end)$' || true
 } > "$ART/EARLY-SMP-SYMBOLS.txt"
 
 {
-	for sym in secondary_startup __secondary_switched hg680ka_diag_exception \
-		__enable_mmu secondary_start_kernel; do
+	for sym in secondary_startup hg680ka_highva_return __secondary_switched __enable_mmu; do
 		printf '\n===== %s =====\n' "$sym"
 		"${CROSS_COMPILE}objdump" -d --disassemble="$sym" "$VMLINUX"
 	done
 } > "$ART/EARLY-SMP-DISASM.txt"
 
 cat "$ART/EARLY-SMP-SYMBOLS.txt"
+
+# Machine-code sanity: __secondary_switched must branch via x19 before the
+# original MOV/call path is reachable, and the helper must contain ASCII 'J'.
+"${CROSS_COMPILE}objdump" -d --disassemble=__secondary_switched "$VMLINUX" | \
+	grep -E 'br[[:space:]]+x19'
+"${CROSS_COMPILE}objdump" -d --disassemble=hg680ka_highva_return "$VMLINUX" | \
+	grep -E "mov[[:space:]]+w10, #0x4a|mov[[:space:]]+w10, #74"
 
 DTB_SMP="$ART/hi3798mv310-hg680ka-smpdiag.dtb"
 dtc -I dts -O dtb -o "$DTB_SMP" "$DTS"
