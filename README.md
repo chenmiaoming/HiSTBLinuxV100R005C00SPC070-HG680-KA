@@ -2,7 +2,7 @@
 
 This repository is a board-focused adaptation of the HiSilicon HiSTBLinux V100R005C00SPC070 SDK for the **FiberHome HG-680-KA** set-top box. The current goal is to turn the board into a reproducible general-purpose Linux development/server platform while retaining the vendor Linux 4.4 multimedia stack as a reference for hardware enablement.
 
-The primary, hardware-tested path today is **vendor Linux 4.4.35 + ARMHF + Ubuntu 22.04 rootfs**, booted non-destructively from the existing HiSilicon Fastboot environment. A separate long-term effort is planned for **mainline/stable Linux 6.18.y on ARM64**.
+The current deployed path is **vendor Linux 4.4.35 + ARMHF + Ubuntu 22.04 rootfs**, with **both the adapted kernel and root filesystem installed on internal eMMC**. The board now boots standalone using the existing HiSilicon Fastboot loader with modified boot environment/arguments. Earlier non-destructive USB boot remains available as a development and recovery workflow, not the primary deployment. As of October 2026, the eMMC system has been serving DNS caching and filtering on a private office network for approximately two weeks (operator-reported). A separate long-term effort is planned for **mainline/stable Linux 6.18.y on ARM64**.
 
 > This is not a generic SPC070 reference-board configuration. Use the `HG-680-KA` board profile for this hardware.
 
@@ -20,12 +20,12 @@ The table below describes the physical unit used for development and validation 
 | RAM | 1 GiB DDR3 | working |
 | Stock DDR configuration | `hi3798m31dmd_hi3798mv310_DDR3-1866_1GB_16bitx2_4layers.reg` | this differs from the SPC070 MV310 reference-board DDR topology; do not replace the stock DDR/Fastboot image with the generic SDK output |
 | Internal flash | Samsung 8 GB eMMC; observed model string `8GTF4R` | user area is approximately 7456 MiB |
-| eMMC interface | MMC 5.1-class device; stock configuration supports 8-bit, 1.8 V, HS400 up to 100 MHz | eMMC is readable on the vendor 4.4 path; destructive repartitioning is deliberately avoided |
+| eMMC interface | MMC 5.1-class device; stock configuration supports 8-bit, 1.8 V, HS400 up to 100 MHz | current deployment stores the adapted kernel and Ubuntu rootfs on eMMC; factory layout below is reference data, not a verified map of modified partitions |
 | Bootloader | HiSilicon/HiSTB Fastboot `3.3.0` | U-Boot-derived shell; this is not Android USB fastboot |
 | Stock SDK | `HiSTBAndroidV600R003C01SPC031_patch5` | factory software reference |
 | Stock kernel | `3.18.24_hi3798mv310` | stock Android kernel/modules are reference material only and must not be loaded into the 4.4.35 kernel |
 | Current project kernel | `4.4.35-HG680-KA` | Linux 4.4 vendor BSP, ARMv7/ARMHF |
-| Current userspace | Ubuntu 22.04 LTS ARMHF | known-good USB-root development system |
+| Current userspace | Ubuntu 22.04 LTS ARMHF | installed on internal eMMC for standalone DNS appliance deployment; USB-root remains a development/recovery option |
 | Ethernet | integrated HiSilicon Fast Ethernet path | working; observed 100 Mbit/s full duplex |
 | Wi-Fi / Bluetooth | MediaTek MT7668 SDIO combo module, 2 × 2 802.11ac + Bluetooth | validated on this unit; do not assume the Realtek/Fn-Link wiring found in generic SPC070 DTS files |
 | Wi-Fi SDIO function | `037A:7608` | hardware validated |
@@ -33,13 +33,13 @@ The table below describes the physical unit used for development and validation 
 | MT7668 SDIO operating point | 3.3 V, 4-bit, 50 MHz, SD High Speed | deliberately avoids UHS/CMD11 during the stable 4.4 bring-up |
 | MT7668 Linux interfaces | `wlan0`, `p2p0`, `ap0` observed during bring-up | Wi-Fi Phase B completed |
 | UART | `ttyAMA0`, 115200 baud | primary boot/recovery/debug console |
-| USB | HiSilicon USB host + USB mass storage | working; used for non-destructive kernel/rootfs boot |
-| TF / microSD | physical slot present | not required by the current USB-root workflow |
+| USB | HiSilicon USB host + USB mass storage | working; non-destructive development/recovery boot path |
+| TF / microSD | physical slot present | not required by the current eMMC deployment |
 | HDMI | vendor HDMI/VO/PQ/TDE/HIFB stack | modules compile and dependency audit passes; runtime HDMI/fbcon bring-up is deferred for now |
 | GPU | vendor configuration contains Mali-450 support | deferred together with the display path |
 | RTC | no usable battery-backed RTC assumed by the project | Ubuntu image uses `fake-hwclock` + `chrony` |
 
-The stock DDR configuration is particularly important when comparing boards. The HG-680-KA unit above uses a `1GB_16bitx2_4layers` DDR configuration, while the generic SPC070 MV310 SDK contains a different reference-board DDR topology. The project therefore keeps the factory bootloader/DDR initialization intact and limits normal development to kernel, DT, drivers and userspace.
+The stock DDR configuration is particularly important when comparing boards. The HG-680-KA unit above uses a `1GB_16bitx2_4layers` DDR configuration, while the generic SPC070 MV310 SDK contains a different reference-board DDR topology. The deployed system still uses the existing HiSilicon Fastboot and factory DDR initialization, but its boot environment/arguments and eMMC kernel/rootfs contents have been changed. Do not mistake the preserved bootloader code for an unchanged factory boot configuration.
 
 ## Stock eMMC / Android partition layout
 
@@ -78,9 +78,9 @@ Important alignment points from that map:
 
 The complete per-partition start/end table, relevant factory environment, stock kernel load arithmetic and safety notes are documented in [`docs/hg680ka/boot-emmc-layout.md`](docs/hg680ka/boot-emmc-layout.md).
 
-This logical map comes from the board's factory `bootargs`; it should be treated as authoritative for the stock Linux partition enumeration. It is not permission to rewrite the internal eMMC. eMMC `boot0`, `boot1`, RPMB, bootloader/auxiliary code, DDR initialization, trusted/secure storage and OTP/eFuse areas remain outside the normal project installation workflow.
+This logical map comes from the board's **factory** `bootargs` and documents the original Android partition enumeration. The running eMMC deployment has since installed a new kernel and rootfs, so this map **must not be assumed to describe the current writable filesystem or image locations**. The exact deployed layout and final Fastboot commands have not been published; do not infer flashing offsets from this stock map. eMMC `boot0`, `boot1`, RPMB, factory bootloader/auxiliary code, DDR initialization, trusted/secure storage and OTP/eFuse remain outside the documented flashing procedure.
 
-### Generated USB development image
+### Generated USB development/recovery image
 
 This is separate from the stock eMMC layout. The current generated removable USB image uses:
 
@@ -89,7 +89,7 @@ This is separate from the stock eMMC layout. The current generated removable USB
 | p1 | FAT32 | `HGBOOT` | 256 MiB boot partition containing the kernel/boot files |
 | p2 | ext4 | `ubuntu-root` | Ubuntu 22.04 ARMHF root filesystem |
 
-Keeping the USB layout documented separately avoids confusing the project-generated image with the factory eMMC partitioning.
+Keeping the USB layout documented separately avoids confusing the project-generated image with the historical factory partition map or the independently deployed eMMC system.
 
 ## Current software stack
 
@@ -98,9 +98,11 @@ Keeping the USB layout documented separately avoids confusing the project-genera
 - Root filesystem: Ubuntu 22.04 LTS (Jammy) ARMHF, generated by GitHub Actions with `debootstrap`.
 - Init/service manager: systemd.
 - Network time: `chrony`; `fake-hwclock` provides a sane approximate time before the network is available.
-- Bootloader used for development: existing HiSilicon Fastboot 3.3.0 environment on the board.
+- Bootloader: existing HiSilicon Fastboot 3.3.0; its stored boot arguments/environment were updated for standalone eMMC boot.
+- Deployed storage: adapted kernel and Ubuntu rootfs on internal eMMC (actual write offsets/partitions not documented).
+- Operational use: DNS caching/filtering on a private office network, approximately two weeks in service as of October 2026 (operator-reported).
 
-The development workflow intentionally leaves the factory bootloader and eMMC boot areas alone. Kernel/rootfs testing can be done from USB, which keeps recovery simple while low-level board support is still changing.
+USB-root boot was the original non-destructive bring-up path and remains useful for controlled tests and recovery. It is **not** the current deployment path. The eMMC migration does not imply that the factory bootloader binary or DDR initialization was replaced.
 
 ## Project progress
 
@@ -109,7 +111,9 @@ The development workflow intentionally leaves the factory bootloader and eMMC bo
 | HG-680-KA board kernel profile | done | board-specific config layered over the vendor MV310 baseline; debug/unrelated drivers trimmed |
 | Kernel build CI | done | GitHub Actions builds `hi_kernel.bin`, `uImage`, DTB and config |
 | Ubuntu 22.04 ARMHF rootfs | done | reproducible debootstrap image |
-| Directly writable USB image | done | FAT32 `HGBOOT` + ext4 `ubuntu-root` image generated by CI |
+| Directly writable USB image | done | FAT32 `HGBOOT` + ext4 `ubuntu-root` image generated by CI for development/recovery |
+| Standalone eMMC boot | deployed | both kernel and Ubuntu rootfs installed on internal eMMC; modified Fastboot boot arguments; exact deployed layout not documented |
+| DNS cache/filter appliance | in use | operating on a private office network for approximately two weeks as of October 2026; not a measured uptime/SLA claim |
 | Ethernet | done | DHCP/IP networking used in board tests |
 | SDIO Phase A | done | deterministic MT7668 enumeration, FN1 `037A:7608`, FN2 `037A:7668` |
 | MT7668 Wi-Fi Phase B | done | 2.4/5 GHz STA, WPA2, DHCP/IP traffic; VHT80 2×2 link reported 866.5 Mbit/s PHY rate |
@@ -145,7 +149,16 @@ GitHub Actions also provides reproducible build jobs for the kernel, MT7668 driv
 - Ubuntu 22.04 ARMHF rootfs tarball
 - directly writable USB disk image
 
-## Non-destructive USB boot
+## Current eMMC installation (deployed status)
+
+The original bring-up sequence used a USB-hosted kernel and root filesystem. The developer has since **flashed the adapted Linux kernel and Ubuntu 22.04 ARMHF rootfs to internal eMMC**, adjusted the existing Fastboot boot environment/command-line parameters with `setenv`, and confirmed **standalone boot from eMMC**. In October 2026 this unit was used as a DNS caching and filtering appliance for a private office network, with about two weeks of operational use at the time of reporting.
+
+This records the observed deployment status, **not a general-purpose flashing guide**. The exact eMMC write offsets/partition layout, final persisted `bootcmd`/`bootargs`, and details of any firmware or filesystem migration are not captured in this repository. The stock `mmc read` offsets below and the USB boot arguments must not be copied as instructions for eMMC installation. No workplace IP addresses, domain lists, filtering rules, or administrative credentials are published here.
+
+The existing vendor Fastboot and DDR initialization remain the starting point; the boot environment is no longer factory-default. See [the stock environment and deployed-status notes](docs/hg680ka/boot-emmc-layout.md) for the distinction.
+
+
+## Non-destructive USB development/recovery boot
 
 The stock Fastboot command loads the factory kernel to `0x1FFBFC0`; the project intentionally reuses the same RAM address for USB boot. With a generated project USB image inserted:
 
@@ -157,7 +170,7 @@ setenv bootargs root=/dev/sda2 rootwait rw console=ttyAMA0,115200 loglevel=7
 bootm 0x01FFBFC0
 ```
 
-`fatls` is only a sanity check that `hi_kernel.bin` exists on the FAT partition. The `setenv` above is intentionally **temporary**. Do not run `saveenv` as part of normal bring-up. Reset/power-cycle restores the original factory `bootargs` and `bootcmd`.
+`fatls` is only a sanity check that `hi_kernel.bin` exists on the FAT partition. This is a **temporary USB boot example**, not the current eMMC deployment command line. Do not run `saveenv` while testing this recovery path. Reset/power-cycle restores whichever Fastboot environment is actually persisted on the board; on the currently deployed unit that is **not necessarily the original factory** `bootargs` or `bootcmd`.
 
 The exact factory environment and partition/load-address derivation are in [`docs/hg680ka/boot-emmc-layout.md`](docs/hg680ka/boot-emmc-layout.md).
 
@@ -235,20 +248,20 @@ firmware/hg680ka/mt7668/             selected stock MT7668 firmware + hashes
 
 ## Safety / recovery rules
 
-During bring-up, prefer RAM/USB boot and read-only hardware archaeology. In particular:
+For new board bring-up or unverified hardware, prefer RAM/USB boot and read-only hardware archaeology. The current unit has already undergone an intentional kernel/rootfs eMMC installation and Fastboot environment changes; these are not recommended as generic copy-and-paste operations. In particular:
 
-- do not use `saveenv` merely to test a boot argument;
-- do not blindly `mmc write` a kernel/rootfs to eMMC;
+- do not use `saveenv` merely to test a boot argument or overwrite a deployed boot configuration without a verified backup/recovery plan;
+- do not blindly `mmc write` a kernel/rootfs to eMMC based on factory partition offsets;
 - do not overwrite eMMC boot0/boot1, RPMB, bootloader or DDR-init regions;
 - do not write SoC OTP/eFuse or MT7668 eFuse/calibration data;
 - do not load stock Android Linux 3.18 kernel modules into the 4.4.35 kernel;
 - keep a UART recovery path available before experimenting with persistent boot changes.
 
-The USB image's helper script is for writing the generated image to a **removable USB drive**, not to the HG-680-KA's internal eMMC.
+The USB image's helper script is for writing the generated image to a **removable USB drive**, not to the HG-680-KA's internal eMMC. It is not the procedure used for the deployed eMMC appliance.
 
 ## Documentation
 
-- `docs/hg680ka/boot-emmc-layout.md` — stock Fastboot environment, complete eMMC `blkdevparts` map and USB boot path.
+- `docs/hg680ka/boot-emmc-layout.md` — original Fastboot environment/eMMC map, deployed eMMC status, and separate USB recovery boot path.
 - `docs/hg680ka/phase-b.md` — MT7668 Wi-Fi bring-up and validation.
 - `docs/hg680ka/phase-c.md` — MT7668 Bluetooth-over-SDIO work.
 - `firmware/hg680ka/mt7668/README.md` — selected factory firmware, hashes and installation model.
