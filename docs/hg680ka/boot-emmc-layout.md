@@ -1,8 +1,8 @@
-# HG-680-KA stock Fastboot environment and eMMC layout
+# HG-680-KA factory Fastboot layout, deployed eMMC boot and USB recovery
 
-This document records the stock boot environment observed on the HG-680-KA development unit used by this repository. It is intended as a board-alignment and recovery reference.
+This document separates the **original factory** bootloader/environment and partition map from the board's **current eMMC deployment**, plus the original USB development/recovery workflow.
 
-The values below were captured from the board's original HiSilicon/HiSTB Fastboot shell. The project does **not** require modifying or replacing the stock bootloader.
+The factory values below were captured before installing the adapted system. The board now has **both the custom Linux 4.4.35 kernel and Ubuntu 22.04 ARMHF rootfs on internal eMMC**, and its Fastboot boot arguments/environment were modified for autonomous startup. The existing vendor Fastboot and DDR initialization are retained, but the stored environment and eMMC contents are no longer assumed factory-default. Exact new partition offsets and the final persisted environment have not been published.
 
 ## Bootloader / storage fingerprint
 
@@ -100,7 +100,7 @@ Env Offset: 0x00400000
 Env Size:   0x00010000
 ```
 
-`0x00400000` is exactly 4 MiB, so the 64 KiB Fastboot environment sits at the beginning of the logical `bootargs` region (`mmcblk0p2`). This project does not write it during normal development.
+`0x00400000` is exactly 4 MiB, so the factory 64 KiB Fastboot environment sat at the beginning of the original logical `bootargs` region (`mmcblk0p2`). The current deployed system uses altered Fastboot environment settings; this stock address is **historical reference data**, not a claim that the deployed environment is unchanged or safe to overwrite.
 
 ## Stock kernel load path
 
@@ -117,9 +117,23 @@ The block arguments use 512-byte MMC sectors:
 - `0x5000` sectors = 20480 sectors = **10 MiB** read into RAM.
 - RAM load address = `0x1FFBFC0`.
 
-This confirms why the project's non-destructive USB boot path also uses `0x1FFBFC0`: it preserves the factory kernel load address while changing only the source from raw eMMC to the FAT USB partition.
+This explains why the project's original USB boot path also uses `0x1FFBFC0`: it preserved the factory RAM load address while changing the kernel source to a FAT USB partition. These are **factory** read/load parameters; they do not establish the exact location or load command of the new eMMC-installed kernel.
 
-## Non-destructive USB boot
+## Current standalone eMMC deployment (October 2026)
+
+The developer reports that the board was migrated from the non-destructive USB development workflow to an internally installed system:
+
+- The adapted Linux 4.4.35-HG680-KA **kernel image has been flashed to eMMC**.
+- The Ubuntu 22.04 ARMHF **root filesystem has also been installed on eMMC**.
+- The existing HiSilicon Fastboot environment/boot command line was modified with `setenv` so the installed system can **boot independently without the USB development drive**.
+- The board has operated for approximately **two weeks** as a **DNS cache and filtering service** in a private office network as of October 2026.
+
+These are operator-reported deployment and usage facts, not proof of a particular filesystem partition number, boot-command string, continuous uptime, network throughput or service availability target. The original factory table above is **not an audited map of the currently deployed eMMC**. In particular, **do not infer** that the replacement kernel was written at the original 76 MiB kernel offset or that the Ubuntu rootfs occupies any particular original Android partition.
+
+No final `bootcmd`, `bootargs`, `mmc write`, image-installation steps, device identifiers, DNS configuration or office network addresses are supplied. This document therefore **does not provide eMMC flash instructions**; a reproducible installation guide would require an independently verified new partition map and a recovery procedure.
+
+
+## USB development/recovery boot (earlier workflow)
 
 The generated USB image contains:
 
@@ -140,16 +154,16 @@ bootm 0x01FFBFC0
 
 Expected `fatload` behavior is to report the number of bytes read. If `fatls usb 0:1` cannot find `hi_kernel.bin`, stop and verify that the correct generated image was written to the USB drive.
 
-The `setenv bootargs ...` command is intentionally temporary. **Do not run `saveenv`.** A power cycle or reset restores the factory environment values.
+The `setenv bootargs ...` command is intentionally temporary for this USB test. **Do not run `saveenv` merely to test recovery boot.** A power cycle or reset reloads the *persisted* Fastboot environment. On a device that has been migrated to eMMC boot, those values may already differ from the factory values recorded above.
 
-The minimal USB boot arguments intentionally omit the stock Android `blkdevparts` string because the generated system does not need the eMMC partitions in order to boot. If read-only access to the factory Android partitions is needed for archaeology, the original `blkdevparts` definition above can be supplied explicitly after boot planning and verification.
+The minimal USB boot arguments intentionally omit the stock Android `blkdevparts` string because the removable development image does not require eMMC for boot. The historical factory `blkdevparts` map should only be used as provenance, not as a safe replacement for the modified system's current partition description. Verify the actual device layout before even considering read-only archaeology.
 
 ## Safety boundaries
 
-Normal project bring-up must not write:
+Fresh board bring-up or recovery testing must not blindly write:
 
 - the factory Fastboot / auxiliary boot code;
-- the Fastboot environment at `0x00400000`;
+- the Fastboot environment at the *factory-reported* `0x00400000` offset (the deployed environment has already been intentionally changed);
 - eMMC `boot0` / `boot1`;
 - RPMB;
 - `trustedcore`, `private`, or `securestore` merely to test Linux;
@@ -157,4 +171,4 @@ Normal project bring-up must not write:
 - SoC OTP/eFuse;
 - MT7668 OTP/eFuse/calibration storage.
 
-Prefer USB-root boot until an eMMC installation design is reviewed independently from the factory partition layout.
+USB-root boot remains a useful non-destructive test/recovery option. The existing eMMC installation is a real deployment, but it should not be reproduced on another board without first capturing the live `bootcmd`/`bootargs`, verifying its exact eMMC layout, backing up boot/recovery data, and checking board-revision compatibility.
